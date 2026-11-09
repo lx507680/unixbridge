@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws:"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>unixbridge</title>
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="titlebar">
+        <span class="brand">unixbridge</span>
+        <span id="session-status" class="session-status">正在启动 PowerShell…</span>
+      </header>
+      <section id="terminal" aria-label="终端"></section>
+    </main>
+    <script type="module" src="/src.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,70 @@
+:root {
+  color-scheme: dark;
+  --color-bg: #0b0f14;
+  --color-panel: #10161d;
+  --color-border: #253041;
+  --color-text: #d6deeb;
+  --color-muted: #8b949e;
+  --color-success: #7ee787;
+  --color-danger: #ff7b72;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#terminal,
+.app-shell {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  overflow: hidden;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: Inter, "Segoe UI", sans-serif;
+}
+
+.app-shell {
+  display: grid;
+  grid-template-rows: 38px minmax(0, 1fr);
+}
+
+.titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-panel);
+  user-select: none;
+  -webkit-app-region: drag;
+}
+
+.brand {
+  font-weight: 650;
+  letter-spacing: 0.04em;
+}
+
+.session-status {
+  color: var(--color-muted);
+  font-size: 12px;
+}
+
+.session-status[data-state="running"] {
+  color: var(--color-success);
+}
+
+.session-status[data-state="stopped"] {
+  color: var(--color-danger);
+}
+
+#terminal {
+  min-width: 0;
+  min-height: 0;
+  padding: 10px 12px;
+}
