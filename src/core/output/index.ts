@@ -1,5 +1,7 @@
 import type { AstNode } from '../parser'
 
+export * from './semantic-table'
+
 export type BlockStatus = 'running' | 'success' | 'error' | 'cancelled' | 'denied'
 
 export interface StructuredTable<Row extends object = object> {

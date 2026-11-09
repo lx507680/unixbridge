@@ -8,12 +8,21 @@ export interface CommandFlagSchema {
   takesValue?: boolean
 }
 
+export interface ColumnDef {
+  key: string
+  header: string
+  description: string
+  detailed?: string
+  type?: 'default' | 'numeric' | 'percentage' | 'date'
+}
+
 export interface CommandSchema {
   name: string
   aliases?: readonly string[]
   summary: string
   usage: string
   flags?: readonly CommandFlagSchema[]
+  columns?: readonly ColumnDef[]
   builtin: boolean
   risk: 'low' | 'medium' | 'high'
 }
@@ -42,6 +51,7 @@ export interface CommandResult {
 export interface CommandDefinition {
   schema: CommandSchema
   execute?: (invocation: CommandInvocation, context: CommandContext) => Promise<CommandResult>
+  parseOutput?: (raw: string) => Array<Record<string, string>>
 }
 
 export interface CommandRegistry {

@@ -1,6 +1,9 @@
 import { FitAddon } from '@xterm/addon-fit'
 import { Terminal } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
+import { renderSemanticTable } from '../core/output/semantic-table'
+import { parseCommandLine } from '../core/parser'
+import type { ColumnDef } from '../preload'
 import './style.css'
 
 function element<T extends Element>(selector: string): T {
@@ -64,6 +67,11 @@ const filesRefreshButton = element<HTMLButtonElement>('#files-refresh')
 const toggleAiButton = element<HTMLButtonElement>('#toggle-ai')
 const closeAiButton = element<HTMLButtonElement>('#close-ai')
 const terminalContext = element<HTMLElement>('#terminal-context')
+const semanticBlock = element<HTMLElement>('#semantic-block')
+const semanticHeader = element<HTMLElement>('#semantic-header')
+const semanticLegend = element<HTMLElement>('#semantic-legend')
+const semanticDetails = element<HTMLElement>('#semantic-details')
+const semanticToggle = element<HTMLButtonElement>('#semantic-toggle')
 const contextRuntime = element<HTMLElement>('#context-runtime')
 const contextDirectory = element<HTMLElement>('#context-directory')
 const contextBranch = element<HTMLElement>('#context-branch')
@@ -217,6 +225,7 @@ interface UiSession {
   statusState: '' | 'running' | 'stopped'
   output: string
   inputBuffer: string
+  currentDirectory?: string
 }
 
 const uiSessions = new Map<string, UiSession>()
@@ -962,6 +971,7 @@ function changeTerminalDirectory(path: string): void {
   recordCommand(command)
   window.unixbridge.write(session.id, `${command}\r`)
   session.inputBuffer = ''
+  session.currentDirectory = path
   workspaceSubtitle.textContent = path
   void loadFiles(path)
   terminal.focus()
@@ -1021,6 +1031,78 @@ function recordCommand(command: string): void {
   localStorage.setItem('unixbridge:command-history', JSON.stringify(commandHistory))
 }
 
+interface StructuredRequest {
+  command: 'ls' | 'ps' | 'df'
+  args: string[]
+  expanded: boolean
+}
+
+function parseStructuredRequest(input: string): StructuredRequest | undefined {
+  const parsed = parseCommandLine(input)
+  if (!parsed.ok || parsed.ast.kind !== 'command') return undefined
+  const command = parsed.ast.name.toLowerCase()
+  if (command !== 'ls' && command !== 'ps' && command !== 'df') return undefined
+  const args = [...parsed.ast.args]
+  const expanded = args.at(-1) === '?'
+  if (expanded) args.pop()
+  return { command, args, expanded }
+}
+
+function renderSemanticMetadata(
+  columns: ColumnDef[],
+  rows: Array<Record<string, string | number>>,
+  expanded: boolean
+): void {
+  const rendered = renderSemanticTable(columns, rows, expanded)
+  semanticHeader.textContent = rendered.headerText
+  semanticLegend.textContent = rendered.legendText
+  semanticDetails.replaceChildren()
+  for (const column of columns) {
+    const item = document.createElement('p')
+    const title = document.createElement('strong')
+    title.textContent = `${column.header} (${column.key})`
+    item.append(title, document.createTextNode(` ${column.detailed ?? column.description}`))
+    item.dataset.type = column.type ?? 'default'
+    semanticDetails.append(item)
+  }
+  semanticDetails.hidden = !expanded
+  semanticToggle.setAttribute('aria-expanded', String(expanded))
+  semanticBlock.hidden = false
+}
+
+function toggleSemanticDetails(): void {
+  if (semanticBlock.hidden) return
+  const expanded = semanticDetails.hidden
+  semanticDetails.hidden = !expanded
+  semanticToggle.setAttribute('aria-expanded', String(expanded))
+}
+
+semanticToggle.addEventListener('click', () => toggleSemanticDetails())
+
+async function showStructuredMetadata(
+  session: UiSession,
+  rawInput: string,
+  request: StructuredRequest
+): Promise<void> {
+  recordCommand(rawInput)
+  void showWorkspaceContext(request.args.length > 0 ? `${request.command} ${request.args.join(' ')}` : request.command)
+  try {
+    const result = await window.unixbridge.structuredCommand(
+      request.command,
+      request.args,
+      session.currentDirectory ?? currentFilePath
+    )
+    if (session.id !== activeSessionId) return
+    renderSemanticMetadata(result.columns, result.rows, request.expanded)
+  } catch (error) {
+    if (session.id !== activeSessionId) return
+    semanticBlock.hidden = false
+    semanticHeader.textContent = request.command
+    semanticLegend.textContent = error instanceof Error ? error.message : String(error)
+    semanticDetails.hidden = true
+  }
+}
+
 async function showWorkspaceContext(command: string): Promise<void> {
   try {
     const context = await window.unixbridge.workspaceContext()
@@ -1032,15 +1114,40 @@ async function showWorkspaceContext(command: string): Promise<void> {
     contextChanges.textContent = `${context.changes} changes`
     contextCommand.textContent = command
     terminalContext.hidden = false
-    requestAnimationFrame(() => fitAddon.fit())
+    requestAnimationFrame(() => {
+      fitAddon.fit()
+      resizeActiveTerminal()
+      terminal.scrollToBottom()
+    })
   } catch {
     terminalContext.hidden = true
+    requestAnimationFrame(() => {
+      fitAddon.fit()
+      resizeActiveTerminal()
+    })
   }
 }
 
 terminal.onData((data) => {
   const session = getActiveSession()
   if (!session) return
+  if (data === '\u0007' && !semanticBlock.hidden) {
+    toggleSemanticDetails()
+    return
+  }
+
+  if (data === '\r' || data === '\n') {
+    const command = session.inputBuffer.trim()
+    const structured = command ? parseStructuredRequest(command) : undefined
+    if (structured) {
+      session.inputBuffer = ''
+      if (structured.expanded) window.unixbridge.write(session.id, '\u007f')
+      window.unixbridge.write(session.id, data)
+      void showStructuredMetadata(session, command, structured)
+      return
+    }
+  }
+
   window.unixbridge.write(session.id, data)
   if (data.startsWith('\u001b')) return
   for (const character of data) {
@@ -1053,6 +1160,8 @@ terminal.onData((data) => {
       }
     } else if (character === '\u007f') {
       session.inputBuffer = session.inputBuffer.slice(0, -1)
+    } else if (character === '\u0003') {
+      session.inputBuffer = ''
     } else if (character >= ' ') {
       session.inputBuffer += character
     }

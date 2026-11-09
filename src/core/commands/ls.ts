@@ -2,6 +2,8 @@ import { lstat, readdir } from 'node:fs/promises'
 import { userInfo } from 'node:os'
 import path from 'node:path'
 import { expandPathPattern } from '../path'
+import { lsColumns } from './columns'
+import { parseLsOutput } from './output-parsers'
 import type {
   CommandContext,
   CommandDefinition,
@@ -270,12 +272,14 @@ export function renderLsText(execution: LsExecution): string {
 }
 
 export const lsCommand: CommandDefinition = {
+  parseOutput: parseLsOutput,
   schema: {
     name: 'ls',
     summary: '列出目录内容',
     usage: 'ls [-lahR] [path...]',
     builtin: true,
     risk: 'low',
+    columns: lsColumns,
     flags: [
       { short: 'l', long: 'long', description: '使用长格式' },
       { short: 'a', long: 'all', description: '包含以 . 开头的项目' },

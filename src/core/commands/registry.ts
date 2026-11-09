@@ -1,5 +1,7 @@
 import type { CommandDefinition, CommandRegistry, CommandSchema } from './types'
+import { dfColumns, psColumns } from './columns'
 import { lsCommand } from './ls'
+import { parseDfOutput, parsePsOutput } from './output-parsers'
 
 const BUILTIN_METADATA: Array<[string, string, string]> = [
   ['pwd', '显示当前目录', 'pwd'],
@@ -21,6 +23,7 @@ const BUILTIN_METADATA: Array<[string, string, string]> = [
   ['grep', '筛选文本或结构化行', 'grep [-ivnr] <pattern> [path...]'],
   ['find', '按条件查找文件', 'find [path] [-name pattern]'],
   ['ps', '显示进程', 'ps'],
+  ['df', '显示文件系统空间', 'df [-h]'],
   ['kill', '终止进程', 'kill [-9] <pid...>'],
   ['man', '显示命令帮助', 'man <command>'],
   ['help', '显示帮助', 'help [command]']
@@ -31,7 +34,8 @@ const BUILTIN_SCHEMAS: CommandSchema[] = BUILTIN_METADATA.map(([name, summary, u
   summary,
   usage,
   builtin: true,
-  risk: name === 'rm' || name === 'kill' ? 'high' : 'low'
+  risk: name === 'rm' || name === 'kill' ? 'high' : 'low',
+  ...(name === 'ps' ? { columns: psColumns } : name === 'df' ? { columns: dfColumns } : {})
 }))
 
 export class InMemoryCommandRegistry implements CommandRegistry {
@@ -64,7 +68,14 @@ export function createDefaultRegistry(
   const definitions = [lsCommand, ...overrides]
   const overrideNames = new Set(definitions.map((item) => item.schema.name))
   for (const schema of BUILTIN_SCHEMAS) {
-    if (!overrideNames.has(schema.name)) registry.register({ schema })
+    if (overrideNames.has(schema.name)) continue
+    registry.register(
+      schema.name === 'ps'
+        ? { schema, parseOutput: parsePsOutput }
+        : schema.name === 'df'
+          ? { schema, parseOutput: parseDfOutput }
+          : { schema }
+    )
   }
   for (const definition of definitions) registry.register(definition)
   return registry

@@ -1,5 +1,8 @@
 import { _electron as electron, expect, test } from '@playwright/test'
+import { mkdtemp, rm } from 'node:fs/promises'
 import { createServer } from 'node:http'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { once } from 'node:events'
 
 test('opens the Warp-like workspace and runs a command', async () => {
@@ -24,7 +27,10 @@ test('opens the Warp-like workspace and runs a command', async () => {
   if (!address || typeof address === 'string') throw new Error('无法启动 AI 测试服务')
   const aiEndpoint = `http://127.0.0.1:${address.port}/v1`
 
-  const application = await electron.launch({ args: ['out/main/index.js'] })
+  const userDataDirectory = await mkdtemp(join(tmpdir(), 'unixbridge-e2e-'))
+  const application = await electron.launch({
+    args: ['out/main/index.js', `--user-data-dir=${userDataDirectory}`]
+  })
   try {
     const window = await application.firstWindow()
     await expect(window).toHaveTitle('unixbridge')
@@ -166,6 +172,12 @@ test('opens the Warp-like workspace and runs a command', async () => {
     await expect(window.locator('.xterm-rows')).toContainText('panels-off')
     await expect(window.locator('#terminal-context')).toBeVisible()
     await expect(window.locator('#context-command')).toHaveText('echo panels-off')
+    const terminalBounds = await window.locator('.terminal-column .blocks').boundingBox()
+    const terminalScreenBounds = await window.locator('#terminal .xterm-screen').boundingBox()
+    if (!terminalBounds || !terminalScreenBounds) throw new Error('无法读取终端显示区域')
+    expect(terminalScreenBounds.y + terminalScreenBounds.height).toBeLessThanOrEqual(
+      terminalBounds.y + terminalBounds.height - 8
+    )
 
     await window.locator('#top-settings').click()
     await aiToggle.check()
@@ -226,12 +238,24 @@ test('opens the Warp-like workspace and runs a command', async () => {
     await window.keyboard.type('echo unixbridge-e2e')
     await window.keyboard.press('Enter')
     await expect(window.locator('.xterm-rows')).toContainText('unixbridge-e2e')
-    await window.keyboard.type('ls -la')
+    const semanticTarget = `${process.cwd()}/package.json`
+    await window.keyboard.type(`ls -la ${semanticTarget}`)
     await window.keyboard.press('Enter')
+    await expect(window.locator('#semantic-header')).toContainText('权限')
+    await expect(window.locator('#semantic-legend')).toContainText('mode: 类型与权限')
+    await expect(window.locator('.xterm-rows')).not.toContainText('mode: 类型与权限')
+    await expect(window.locator('.xterm-rows')).toContainText('package.json')
+    await window.keyboard.press('Control+g')
+    await expect(window.locator('#semantic-details')).toContainText('第 1 位表示类型')
+
+    await window.keyboard.type(`ls -la ${semanticTarget} ?`)
+    await window.keyboard.press('Enter')
+    await expect(window.locator('#semantic-details')).toContainText('权限 (mode)')
+    await expect(window.locator('.xterm-rows')).not.toContainText('权限 (mode)')
 
     const search = window.locator('#command-search')
     await search.fill('ls -la')
-    await expect(window.locator('#command-search-results button')).toHaveText('ls -la')
+    await expect(window.locator('#command-search-results button').first()).toContainText('ls -la')
 
     await search.fill('missing-command')
     await expect(window.locator('.search-result-empty')).toBeVisible()
@@ -247,5 +271,6 @@ test('opens the Warp-like workspace and runs a command', async () => {
   } finally {
     await application.close()
     await new Promise<void>((resolve) => aiServer.close(() => resolve()))
+    await rm(userDataDirectory, { recursive: true, force: true })
   }
 })

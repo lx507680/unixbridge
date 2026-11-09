@@ -52,6 +52,21 @@ export interface WorkspaceContext {
   changes: number
 }
 
+export interface ColumnDef {
+  key: string
+  header: string
+  description: string
+  detailed?: string
+  type?: 'default' | 'numeric' | 'percentage' | 'date'
+}
+
+export interface StructuredCommandResult {
+  command: 'ls' | 'ps' | 'df'
+  columns: ColumnDef[]
+  rows: Array<Record<string, string | number>>
+  rawOutput: string
+}
+
 export interface UnixbridgeApi {
   start: (sessionId: string, cols: number, rows: number) => Promise<PtyStartResult>
   write: (sessionId: string, data: string) => void
@@ -64,6 +79,11 @@ export interface UnixbridgeApi {
   chatStream: (messages: ChatMessage[], onChunk: (chunk: string) => void) => Promise<void>
   metrics: () => Promise<SystemMetrics>
   listFiles: (path?: string) => Promise<FileListing>
+  structuredCommand: (
+    command: string,
+    args: string[],
+    cwd?: string
+  ) => Promise<StructuredCommandResult>
   workspaceContext: () => Promise<WorkspaceContext>
 }
 
@@ -112,6 +132,8 @@ const api: UnixbridgeApi = {
     }),
   metrics: () => ipcRenderer.invoke('system:metrics'),
   listFiles: (path) => ipcRenderer.invoke('files:list', path),
+  structuredCommand: (command, args, cwd) =>
+    ipcRenderer.invoke('commands:structured', { command, args, cwd }),
   workspaceContext: () => ipcRenderer.invoke('workspace:context')
 }
 
