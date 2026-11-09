@@ -7,11 +7,9 @@ describe('command registry', () => {
 
     expect(registry.resolve('pwd')?.schema.builtin).toBe(true)
     expect(registry.resolve('ls')?.execute).toBeTypeOf('function')
-    expect(registry.resolve('ls')?.schema.columns?.map((column) => column.key)).toEqual([
-      'mode', 'links', 'owner', 'group', 'size', 'mtime', 'name'
-    ])
-    expect(registry.resolve('ps')?.schema.columns).toHaveLength(10)
-    expect(registry.resolve('df')?.schema.columns).toHaveLength(6)
+    expect(registry.resolve('ls')?.schema.columns).toBeUndefined()
+    expect(registry.resolve('ps')?.schema.columns).toBeUndefined()
+    expect(registry.resolve('df')?.schema.columns).toBeUndefined()
     expect(registry.resolve('awk')).toBeUndefined()
     expect(registry.list().map((command) => command.schema.name)).toContain('kill')
   })

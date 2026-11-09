@@ -62,7 +62,7 @@ export interface ColumnDef {
 }
 
 export interface StructuredCommandResult {
-  command: 'ls' | 'ps' | 'df'
+  command: string
   columns: ColumnDef[]
   rows: Array<Record<string, string | number>>
   rawOutput: string

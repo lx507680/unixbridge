@@ -3,6 +3,7 @@ import { Terminal } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
 import { renderSemanticTable } from '../core/output/semantic-table'
 import { parseCommandLine } from '../core/parser'
+import { canStructure, type StructuredPlatform } from '../core/structured'
 import type { ColumnDef } from '../preload'
 import './style.css'
 
@@ -1032,19 +1033,31 @@ function recordCommand(command: string): void {
 }
 
 interface StructuredRequest {
-  command: 'ls' | 'ps' | 'df'
+  command: string
   args: string[]
   expanded: boolean
 }
 
-function parseStructuredRequest(input: string): StructuredRequest | undefined {
+function structuredPlatform(platform: NodeJS.Platform | null): StructuredPlatform | undefined {
+  if (platform === 'darwin') return 'mac'
+  if (platform === 'linux') return 'linux'
+  if (platform === 'win32') return 'windows'
+  return undefined
+}
+
+function parseStructuredRequest(
+  input: string,
+  platform: NodeJS.Platform | null
+): StructuredRequest | undefined {
+  const structured = structuredPlatform(platform)
+  if (!structured) return undefined
   const parsed = parseCommandLine(input)
   if (!parsed.ok || parsed.ast.kind !== 'command') return undefined
   const command = parsed.ast.name.toLowerCase()
-  if (command !== 'ls' && command !== 'ps' && command !== 'df') return undefined
   const args = [...parsed.ast.args]
   const expanded = args.at(-1) === '?'
   if (expanded) args.pop()
+  if (!canStructure(command, args, structured)) return undefined
   return { command, args, expanded }
 }
 
@@ -1106,6 +1119,10 @@ async function showStructuredMetadata(
       session.currentDirectory ?? currentFilePath
     )
     if (session.id !== activeSessionId) return
+    if (result.columns.length === 0) {
+      semanticBlock.hidden = true
+      return
+    }
     renderSemanticMetadata(result.columns, result.rows, request.expanded)
   } catch (error) {
     if (session.id !== activeSessionId) return
@@ -1158,7 +1175,9 @@ terminal.onData((data) => {
   let structured: StructuredRequest | undefined
   if (data === '\r' || data === '\n') {
     submittedCommand = session.inputBuffer.trim()
-    structured = submittedCommand ? parseStructuredRequest(submittedCommand) : undefined
+    structured = submittedCommand
+      ? parseStructuredRequest(submittedCommand, session.platform)
+      : undefined
     if (structured?.expanded) outbound = `\u007f${data}`
   }
   window.unixbridge.write(session.id, outbound)

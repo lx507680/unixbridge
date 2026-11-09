@@ -1,0 +1,31 @@
+---
+description: 终端结构化输出（表头/图例/跨平台命令翻译）的工程约定
+globs: src/**/*.{ts,tsx}
+alwaysApply: false
+---
+
+# 终端结构化输出
+
+三层分离：Translator（语义等价）→ Executor（真实 Shell）→ Parser/Renderer。
+
+- `CommandParser` 必须实现 `match(cmd, platform)`、`parse(raw)`、`columns()`。
+- `columns()` 由本次解析结果推导。禁止「命令名 → 固定 schema」。
+- 新增命令只新增解析器并注册，不改渲染主流程。
+- 解析只用命名组正则。变长列（文件名、COMMAND）用 `.+` 收到行尾。禁止 `split(' ')`。
+- 宽度只用 `string-width`。表头、图例、详细卡片只在 Block 渲染层出现。
+- 无 `columns` 的命令保持原始输出，渲染路径零改动。
+- 不向 PTY 写入非用户输入的回显。不做表头 DOM 交互，只提供 `columns` 数据。
+- 语义等价表以 semantic 为键，值为 `Record<'mac' | 'linux' | 'windows', string>`。
+- Windows 的 `netstat` / `tasklist` 单独解析；优先 `Get-NetTCPConnection`，不复用 Unix 正则。
+
+```typescript
+// ❌ 按命令名取静态列，并用空格切分
+const columns = command === 'ls' ? lsColumns : []
+const cells = line.split(' ')
+
+// ✅ 平台 + 命令 + 实际输出决定列
+const parser = registry.match(command, platform)
+const rows = parser.parse(rawOutput)
+const columns = parser.columns()
+const name = /^(?<mode>\S+)\s+.*\s+(?<name>.+)$/.exec(line)?.groups?.name
+```

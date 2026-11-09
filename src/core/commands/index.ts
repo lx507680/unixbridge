@@ -1,5 +1,4 @@
 export * from './types'
 export * from './registry'
 export * from './ls'
-export * from './columns'
 export * from './system-tables'

@@ -5,6 +5,7 @@ import { cpus, freemem, homedir, totalmem } from 'node:os'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import { executeStructuredCommand } from '../core/commands'
+import { currentPlatform, resolveStructured } from '../core/structured'
 
 const execFileAsync = promisify(execFile)
 
@@ -287,10 +288,12 @@ export function registerWorkspaceIpc(
     ) => {
       if (!isTrustedSender(event)) throw new Error('拒绝不受信任的结构化命令请求')
       const command = String(request?.command ?? '').toLowerCase()
-      if (!['ls', 'ps', 'df'].includes(command)) throw new Error('不支持的结构化命令')
       const args = Array.isArray(request?.args)
         ? request.args.slice(0, 100).map((arg) => String(arg).slice(0, 2_000))
         : []
+      if (!resolveStructured(command, args, currentPlatform())) {
+        throw new Error('不支持的结构化命令')
+      }
       const cwd = resolveSafePath(request?.cwd)
       return executeStructuredCommand(command, args, cwd)
     }

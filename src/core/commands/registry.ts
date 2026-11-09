@@ -1,5 +1,4 @@
 import type { CommandDefinition, CommandRegistry, CommandSchema } from './types'
-import { dfColumns, psColumns } from './columns'
 import { lsCommand } from './ls'
 import { parseDfOutput, parsePsOutput } from './output-parsers'
 
@@ -34,8 +33,7 @@ const BUILTIN_SCHEMAS: CommandSchema[] = BUILTIN_METADATA.map(([name, summary, u
   summary,
   usage,
   builtin: true,
-  risk: name === 'rm' || name === 'kill' ? 'high' : 'low',
-  ...(name === 'ps' ? { columns: psColumns } : name === 'df' ? { columns: dfColumns } : {})
+  risk: name === 'rm' || name === 'kill' ? 'high' : 'low'
 }))
 
 export class InMemoryCommandRegistry implements CommandRegistry {

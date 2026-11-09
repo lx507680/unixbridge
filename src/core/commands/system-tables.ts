@@ -2,14 +2,13 @@ import { execFile } from 'node:child_process'
 import { totalmem } from 'node:os'
 import { promisify } from 'node:util'
 import type { ColumnDef } from './types'
-import { dfColumns, lsColumns, psColumns } from './columns'
 import { executeLs, renderLsText } from './ls'
-import { parseDfOutput, parseLsOutput, parsePsOutput } from './output-parsers'
+import { currentPlatform, resolveStructured } from '../structured'
 
 const execFileAsync = promisify(execFile)
 
 export interface StructuredCommandResult {
-  command: 'ls' | 'ps' | 'df'
+  command: string
   columns: readonly ColumnDef[]
   rows: Array<Record<string, string>>
   rawOutput: string
@@ -44,16 +43,22 @@ async function runPowerShell(script: string): Promise<string> {
   throw new Error(`无法读取 PowerShell 系统信息: ${String(lastError)}`)
 }
 
+function structuredLsArgs(args: string[]): string[] {
+  const longFormat = args.some((arg) => arg.startsWith('-') && !arg.startsWith('--') && arg.includes('l'))
+  return longFormat ? args : ['-1', ...args]
+}
+
 async function captureLs(args: string[], cwd: string): Promise<string> {
+  const commandArgs = structuredLsArgs(args)
   if (process.platform !== 'win32') {
-    const { stdout } = await execFileAsync('ls', args, {
+    const { stdout } = await execFileAsync('ls', commandArgs, {
       cwd,
       timeout: 10_000,
       maxBuffer: 4 * 1024 * 1024
     })
     return stdout
   }
-  const execution = await executeLs(args, cwd)
+  const execution = await executeLs(commandArgs, cwd)
   if (execution.errors.length > 0) throw new Error(execution.errors.join('\n'))
   return renderLsText(execution)
 }
@@ -106,22 +111,47 @@ async function captureDf(args: string[]): Promise<string> {
   return runPowerShell(script)
 }
 
+async function capturePlan(
+  command: string,
+  args: string[],
+  cwd: string,
+  shellLine?: string
+): Promise<string> {
+  if (command === 'ls') return captureLs(args, cwd)
+  if (command === 'ps') return capturePs()
+  if (command === 'df') return captureDf(args)
+  if (command === 'tasklist') return captureTasklist()
+  if (command === 'netstat' && shellLine) return captureNetstat(shellLine)
+  throw new Error(`不支持结构化命令: ${command}`)
+}
+
+async function captureTasklist(): Promise<string> {
+  return runPowerShell(
+    "tasklist /FO CSV /NH | Out-String"
+  )
+}
+
+async function captureNetstat(shellLine: string): Promise<string> {
+  if (!/^netstat -ano(?: \| findstr :\d{1,5})?$/.test(shellLine)) {
+    throw new Error('拒绝未登记的 Windows 网络命令')
+  }
+  const { stdout } = await execFileAsync('cmd.exe', ['/d', '/s', '/c', shellLine], {
+    timeout: 10_000,
+    windowsHide: true,
+    maxBuffer: 4 * 1024 * 1024
+  })
+  return stdout
+}
+
 export async function executeStructuredCommand(
   command: string,
   args: string[],
   cwd: string
 ): Promise<StructuredCommandResult> {
-  if (command === 'ls') {
-    const rawOutput = await captureLs(args, cwd)
-    return { command, columns: lsColumns, rows: parseLsOutput(rawOutput), rawOutput }
-  }
-  if (command === 'ps') {
-    const rawOutput = await capturePs()
-    return { command, columns: psColumns, rows: parsePsOutput(rawOutput), rawOutput }
-  }
-  if (command === 'df') {
-    const rawOutput = await captureDf(args)
-    return { command, columns: dfColumns, rows: parseDfOutput(rawOutput), rawOutput }
-  }
-  throw new Error(`不支持结构化命令: ${command}`)
+  const plan = resolveStructured(command, args, currentPlatform())
+  if (!plan) throw new Error(`不支持结构化命令: ${command}`)
+  const rawOutput = await capturePlan(plan.command, plan.args, cwd, plan.shellLine)
+  const parser = plan.createParser()
+  const rows = parser.parse(rawOutput)
+  return { command, columns: parser.columns(), rows, rawOutput }
 }
