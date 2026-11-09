@@ -171,13 +171,14 @@ git init
 git add .
 git commit -m "feat: initialize unixbridge M0"
 git branch -M main
-git remote add origin https://github.com/YOUR_NAME/unixbridge.git
+git remote add origin git@github.com:lx507680/unixbridge.git
 git push -u origin main
 ```
 
 如果仓库已经配置过 `origin`：
 
 ```bash
+git remote set-url origin git@github.com:lx507680/unixbridge.git
 git add .
 git commit -m "docs: update project documentation"
 git push
