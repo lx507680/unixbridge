@@ -42,11 +42,12 @@ test('opens the Warp-like workspace and runs a command', async () => {
       timeout: 15_000
     })
 
-    if (process.platform === 'win32') {
-      await expect(window.locator('#session-status')).toContainText('PowerShell · ConPTY')
-    } else {
-      await expect(window.locator('#session-status')).toContainText('开发 shell · 非 ConPTY')
-    }
+    const shellStatus =
+      process.platform === 'win32'
+        ? 'PowerShell · ConPTY'
+        : `${(process.env.SHELL ?? '/bin/zsh').split(/[\\/]/).pop()} · PID`
+    await expect(window.locator('#session-status')).toContainText(shellStatus)
+    await expect(window.locator('#session-status')).not.toContainText('开发')
 
     await window.locator('#terminal').click()
     await window.keyboard.type(
@@ -252,6 +253,10 @@ test('opens the Warp-like workspace and runs a command', async () => {
     await window.keyboard.press('Enter')
     await expect(window.locator('#semantic-details')).toContainText('权限 (mode)')
     await expect(window.locator('.xterm-rows')).not.toContainText('权限 (mode)')
+    await window.locator('#terminal').click()
+    await window.keyboard.type('echo prompt-continues')
+    await window.keyboard.press('Enter')
+    await expect(window.locator('.xterm-rows')).toContainText('prompt-continues')
 
     const search = window.locator('#command-search')
     await search.fill('ls -la')

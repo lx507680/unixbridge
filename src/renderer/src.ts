@@ -1085,7 +1085,10 @@ async function showStructuredMetadata(
   request: StructuredRequest
 ): Promise<void> {
   recordCommand(rawInput)
-  void showWorkspaceContext(request.args.length > 0 ? `${request.command} ${request.args.join(' ')}` : request.command)
+  void showWorkspaceContext(
+    request.args.length > 0 ? `${request.command} ${request.args.join(' ')}` : request.command,
+    false
+  )
   try {
     const result = await window.unixbridge.structuredCommand(
       request.command,
@@ -1103,7 +1106,7 @@ async function showStructuredMetadata(
   }
 }
 
-async function showWorkspaceContext(command: string): Promise<void> {
+async function showWorkspaceContext(command: string, relayout = true): Promise<void> {
   try {
     const context = await window.unixbridge.workspaceContext()
     const pathParts = context.directory.split(/[\\/]/).filter(Boolean)
@@ -1113,14 +1116,18 @@ async function showWorkspaceContext(command: string): Promise<void> {
     contextBranch.textContent = context.branch ?? '无 Git 分支'
     contextChanges.textContent = `${context.changes} changes`
     contextCommand.textContent = command
+    const becameVisible = terminalContext.hidden
     terminalContext.hidden = false
+    if (!relayout || !becameVisible) return
     requestAnimationFrame(() => {
       fitAddon.fit()
       resizeActiveTerminal()
       terminal.scrollToBottom()
     })
   } catch {
+    const becameHidden = !terminalContext.hidden
     terminalContext.hidden = true
+    if (!relayout || !becameHidden) return
     requestAnimationFrame(() => {
       fitAddon.fit()
       resizeActiveTerminal()
@@ -1136,19 +1143,15 @@ terminal.onData((data) => {
     return
   }
 
+  let outbound = data
+  let submittedCommand = ''
+  let structured: StructuredRequest | undefined
   if (data === '\r' || data === '\n') {
-    const command = session.inputBuffer.trim()
-    const structured = command ? parseStructuredRequest(command) : undefined
-    if (structured) {
-      session.inputBuffer = ''
-      if (structured.expanded) window.unixbridge.write(session.id, '\u007f')
-      window.unixbridge.write(session.id, data)
-      void showStructuredMetadata(session, command, structured)
-      return
-    }
+    submittedCommand = session.inputBuffer.trim()
+    structured = submittedCommand ? parseStructuredRequest(submittedCommand) : undefined
+    if (structured?.expanded) outbound = `\u007f${data}`
   }
-
-  window.unixbridge.write(session.id, data)
+  window.unixbridge.write(session.id, outbound)
   if (data.startsWith('\u001b')) return
   for (const character of data) {
     if (character === '\r' || character === '\n') {
@@ -1166,6 +1169,7 @@ terminal.onData((data) => {
       session.inputBuffer += character
     }
   }
+  if (structured) void showStructuredMetadata(session, submittedCommand, structured)
 })
 
 let resizeFrame = 0
@@ -1183,13 +1187,17 @@ const resizeObserver = new ResizeObserver(() => {
 })
 resizeObserver.observe(container)
 
-function setConnectionState(session: UiSession, platform: NodeJS.Platform, pid: number): void {
-  const isWindows = platform === 'win32'
+function setConnectionState(
+  session: UiSession,
+  platform: NodeJS.Platform,
+  pid: number,
+  shell: string
+): void {
   session.platform = platform
-  const label = isWindows ? 'PowerShell · ConPTY' : '开发 shell · 非 ConPTY'
+  const label = platform === 'win32' ? `${shell} · ConPTY` : shell
   session.statusText = `${label} · PID ${pid}`
   session.statusState = 'running'
-  session.platformLabel = `${isWindows ? 'PowerShell' : 'Local shell'} · PID ${pid}`
+  session.platformLabel = `${label} · PID ${pid}`
   renderSessionList()
   if (session.id === activeSessionId) syncActiveSessionUi()
 }
@@ -1221,12 +1229,12 @@ async function startSession(): Promise<void> {
 
   try {
     fitAddon.fit()
-    const { platform, pid } = await window.unixbridge.start(
+    const { platform, pid, shell } = await window.unixbridge.start(
       sessionId,
       terminal.cols,
       terminal.rows
     )
-    setConnectionState(session, platform, pid)
+    setConnectionState(session, platform, pid, shell)
     terminal.focus()
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error)

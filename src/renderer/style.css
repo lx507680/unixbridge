@@ -1321,26 +1321,34 @@ body[data-theme="dark"] .welcome-icon {
 }
 
 #terminal {
-  grid-row: 2;
+  grid-row: 1;
   height: 100%;
   padding: 16px 20px;
   background: var(--panel-raised);
 }
 
 .terminal-column .blocks {
+  position: relative;
   display: grid;
   min-height: 0;
   overflow: hidden;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   padding: 0 0 16px;
   background: var(--panel-raised);
 }
 
 .semantic-block {
-  grid-row: 1;
+  position: absolute;
+  z-index: 6;
+  top: 0;
+  right: 0;
+  left: 0;
+  max-height: 42%;
+  overflow: auto;
   border-bottom: 1px solid var(--border);
-  background: var(--panel);
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
   padding: 8px 14px;
+  backdrop-filter: blur(10px);
 }
 
 .semantic-block[hidden] {

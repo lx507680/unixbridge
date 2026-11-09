@@ -55,8 +55,8 @@ Unix-semantics 命令层执行，并为管道和界面保留结构化结果。
 - 安装 node-pty 原生依赖所需的 Python 与 Visual Studio Build Tools（Desktop
   development with C++）
 
-macOS/Linux 只提供开发预览，会启动 `$SHELL` 并在界面明确显示“非 ConPTY”；这不代表
-目标平台能力已通过验证。
+macOS/Linux 会启动 `$SHELL`，状态栏显示实际 shell 名称和 PID。Windows 仍显示
+`PowerShell · ConPTY`。
 
 ## 快速开始
 

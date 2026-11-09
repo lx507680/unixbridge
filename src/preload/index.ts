@@ -4,6 +4,7 @@ export interface PtyStartResult {
   sessionId: string
   platform: NodeJS.Platform
   pid: number
+  shell: string
 }
 
 export interface AiConfig {

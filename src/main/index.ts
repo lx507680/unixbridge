@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron'
 import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import * as pty from 'node-pty'
 import { registerWorkspaceIpc } from './workspace-ipc'
 
@@ -32,7 +32,13 @@ function windowsShellCandidates(): string[] {
   ]
 }
 
-function spawnShell(cols: number, rows: number): pty.IPty {
+function shellName(shellPath: string): string {
+  const name = basename(shellPath).replace(/\.exe$/i, '')
+  if (/^(pwsh|powershell)$/i.test(name)) return 'PowerShell'
+  return name || 'shell'
+}
+
+function spawnShell(cols: number, rows: number): { terminal: pty.IPty; shell: string } {
   const options: pty.IPtyForkOptions = {
     name: 'xterm-256color',
     cols,
@@ -42,15 +48,18 @@ function spawnShell(cols: number, rows: number): pty.IPty {
   }
 
   if (process.platform !== 'win32') {
-    // Development-only compatibility path. Production M0 is Windows ConPTY.
-    return pty.spawn(process.env.SHELL ?? '/bin/zsh', ['-l'], options)
+    const shell = process.env.SHELL ?? '/bin/zsh'
+    return { terminal: pty.spawn(shell, ['-l'], options), shell: shellName(shell) }
   }
 
   let lastError: unknown
   for (const candidate of windowsShellCandidates()) {
     if (candidate.includes('\\') && !existsSync(candidate)) continue
     try {
-      return pty.spawn(candidate, ['-NoLogo'], { ...options, useConpty: true })
+      return {
+        terminal: pty.spawn(candidate, ['-NoLogo'], { ...options, useConpty: true }),
+        shell: 'PowerShell'
+      }
     } catch (error) {
       lastError = error
     }
@@ -91,7 +100,7 @@ function registerPtyIpc(): void {
 
       const cols = Math.max(2, Math.floor(request.cols))
       const rows = Math.max(1, Math.floor(request.rows))
-      const terminal = spawnShell(cols, rows)
+      const { terminal, shell } = spawnShell(cols, rows)
       sessions.set(sessionId, { ownerId: event.sender.id, terminal })
 
       terminal.onData((data) => {
@@ -102,7 +111,7 @@ function registerPtyIpc(): void {
         if (!event.sender.isDestroyed()) event.sender.send('pty:exit', { sessionId, exitCode })
       })
 
-      return { sessionId, platform: process.platform, pid: terminal.pid }
+      return { sessionId, platform: process.platform, pid: terminal.pid, shell }
     }
   )
 
