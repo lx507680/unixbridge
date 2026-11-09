@@ -11,11 +11,239 @@
   </head>
   <body>
     <main class="app-shell">
-      <header class="titlebar">
-        <span class="brand">unixbridge</span>
-        <span id="session-status" class="session-status">正在启动 PowerShell…</span>
-      </header>
-      <section id="terminal" aria-label="终端"></section>
+      <aside class="sidebar" aria-label="会话导航">
+        <div class="sidebar-heading">
+          <button id="toggle-ai" class="brand-mark ai-toggle" type="button" aria-label="打开或关闭 AI 助手" title="打开或关闭 AI 助手">✦</button>
+          <div class="brand-copy">
+            <strong class="brand">unixbridge</strong>
+            <span class="brand-caption">Terminal workspace</span>
+          </div>
+          <button id="sidebar-toggle" class="icon-button sidebar-toggle" type="button" aria-label="收起侧边栏">‹</button>
+        </div>
+
+        <div class="sidebar-tools">
+          <div class="search-wrap">
+            <span class="search-icon" aria-hidden="true">⌕</span>
+            <input id="command-search" type="search" placeholder="搜索会话和命令…" autocomplete="off" />
+          </div>
+          <button
+            id="view-settings"
+            class="icon-button tool-button"
+            type="button"
+            aria-label="布局与显示设置"
+            aria-expanded="false"
+            title="布局与显示设置"
+          >☷</button>
+          <button id="new-session" class="icon-button tool-button add-button" type="button" aria-label="新建终端会话" title="新建终端会话">＋</button>
+        </div>
+
+        <nav class="sidebar-module-nav" aria-label="工作区模块">
+          <button class="is-active" type="button" data-module="terminal"><span>›_</span>终端</button>
+          <button type="button" data-module="ai"><span>✦</span>AI</button>
+          <button type="button" data-module="files"><span>▰</span>文件</button>
+          <button type="button" data-module="metrics"><span>⌁</span>系统</button>
+        </nav>
+
+        <section id="settings-popover" class="settings-popover" aria-label="布局与显示设置" hidden>
+          <div class="settings-group">
+            <span class="settings-label">显示方式</span>
+            <div class="segmented-control" data-setting="view">
+              <button class="is-selected" type="button" data-value="panes">窗格</button>
+              <button type="button" data-value="tabs">标签页</button>
+            </div>
+          </div>
+          <div class="settings-group">
+            <span class="settings-label">显示密度</span>
+            <div class="segmented-control" data-setting="density">
+              <button class="is-selected" type="button" data-value="comfortable">舒适</button>
+              <button type="button" data-value="compact">紧凑</button>
+            </div>
+          </div>
+          <fieldset class="settings-group option-list" data-setting="title">
+            <legend>窗格标题显示为</legend>
+            <label><input type="radio" name="pane-title" value="command" checked /> 命令 / 会话</label>
+            <label><input type="radio" name="pane-title" value="directory" /> 工作目录</label>
+            <label><input type="radio" name="pane-title" value="branch" /> Git 分支</label>
+          </fieldset>
+          <fieldset class="settings-group option-list" data-setting="metadata">
+            <legend>附加信息</legend>
+            <label><input type="checkbox" value="branch" checked /> Git 分支</label>
+            <label><input type="checkbox" value="directory" checked /> 工作目录</label>
+          </fieldset>
+          <div class="settings-group">
+            <span class="settings-label">工作区布局</span>
+            <div class="segmented-control" data-setting="layout">
+              <button class="is-selected" type="button" data-value="balanced">均衡</button>
+              <button type="button" data-value="terminal">终端优先</button>
+              <button type="button" data-value="assistant">AI 优先</button>
+            </div>
+          </div>
+          <fieldset class="settings-group option-list" data-setting="panels">
+            <legend>显示面板</legend>
+            <label><input type="checkbox" value="ai" checked /> AI 助手</label>
+            <label><input type="checkbox" value="metrics" checked /> GPU / CPU 指标</label>
+            <label><input type="checkbox" value="files" checked /> 文件浏览器</label>
+          </fieldset>
+          <div class="settings-group range-settings">
+            <label>AI 面板宽度 <output id="ai-width-value">220px</output></label>
+            <input id="ai-width" type="range" min="200" max="420" step="10" value="220" />
+            <label>右侧面板宽度 <output id="widgets-width-value">240px</output></label>
+            <input id="widgets-width" type="range" min="220" max="420" step="10" value="240" />
+          </div>
+          <div class="settings-group ai-settings">
+            <span class="settings-label">AI 服务</span>
+            <div class="segmented-control" data-setting="ai-provider">
+              <button class="is-selected" type="button" data-value="local">本地</button>
+              <button type="button" data-value="api">API Key</button>
+            </div>
+            <label>服务地址<input id="ai-endpoint" type="url" value="http://127.0.0.1:11434/v1" /></label>
+            <label>模型<input id="ai-model" type="text" value="qwen2.5-coder:7b" /></label>
+            <label id="ai-key-label" hidden>API Key<input id="ai-api-key" type="password" autocomplete="off" /></label>
+            <button id="save-ai-config" class="settings-primary" type="button">保存 AI 配置</button>
+            <small id="ai-config-status">密钥仅保存在本次应用进程内</small>
+          </div>
+          <div class="settings-group">
+            <span class="settings-label">主题</span>
+            <div class="segmented-control" data-setting="theme">
+              <button class="is-selected" type="button" data-value="light">浅色</button>
+              <button type="button" data-value="dark">深色</button>
+            </div>
+          </div>
+        </section>
+
+        <div class="sidebar-section">
+          <div class="section-label">
+            <span>终端会话</span>
+            <span class="session-count">1</span>
+          </div>
+          <div class="session-card">
+            <button class="session-item is-active" type="button">
+              <span class="session-icon">›_</span>
+              <span class="session-copy">
+                <strong id="session-title">本地终端</strong>
+                <small id="session-platform">正在连接…</small>
+                <small class="session-metadata">
+                  <span data-metadata="branch">⌘ main</span>
+                  <span data-metadata="directory">~/workspace</span>
+                </small>
+              </span>
+            </button>
+            <button id="edit-session" class="session-edit" type="button" aria-label="编辑会话标签和颜色" title="编辑会话">•••</button>
+          </div>
+          <section id="session-editor" class="session-editor" aria-label="编辑会话" hidden>
+            <label for="session-name">会话标签</label>
+            <input id="session-name" type="text" maxlength="30" value="本地终端" />
+            <span class="session-editor-label">会话颜色</span>
+            <div class="color-options" role="group" aria-label="选择会话颜色">
+              <button type="button" data-color="#73b7c8" aria-label="蓝色"></button>
+              <button type="button" data-color="#6fbd9c" aria-label="绿色"></button>
+              <button type="button" data-color="#d78db5" aria-label="粉色"></button>
+              <button type="button" data-color="#d3a65f" aria-label="琥珀色"></button>
+              <button type="button" data-color="#8f83d8" aria-label="紫色"></button>
+            </div>
+          </section>
+        </div>
+
+        <div class="sidebar-spacer"></div>
+      </aside>
+
+      <section class="workspace">
+        <header class="titlebar">
+          <button id="mobile-menu" class="icon-button mobile-menu" type="button" aria-label="打开侧边栏">☰</button>
+          <div class="workspace-title">
+            <span class="terminal-glyph">›_</span>
+            <div>
+              <strong id="workspace-title-label">本地终端</strong>
+              <span id="workspace-subtitle">~/workspace</span>
+            </div>
+          </div>
+          <div class="titlebar-actions">
+            <span id="session-status" class="session-status">正在启动终端…</span>
+            <button id="clear-terminal" class="icon-button" type="button" aria-label="清空终端" title="清空终端">⌫</button>
+            <button id="top-settings" class="icon-button" type="button" aria-label="打开设置" title="布局、AI 与个性化设置">•••</button>
+          </div>
+        </header>
+
+        <div id="workbench" class="workbench">
+          <aside id="ai-panel" class="workbench-panel ai-panel" aria-label="AI 助手">
+            <header class="panel-header">
+              <div>
+                <button id="close-ai" class="panel-toggle" type="button" aria-label="关闭 AI 助手">✦</button>
+                <strong>AI 助手</strong>
+              </div>
+              <span id="ai-mode-label">本地模型</span>
+            </header>
+            <div id="ai-messages" class="ai-messages" aria-live="polite">
+              <div class="ai-welcome">
+                <span>✦</span>
+                <strong>终端 AI 助手</strong>
+                <p>可以询问命令、错误信息和当前工作流。请先在设置中配置本地模型或 API Key。</p>
+              </div>
+            </div>
+            <form id="ai-form" class="ai-composer">
+              <textarea id="ai-input" rows="2" placeholder="向 AI 提问…" aria-label="向 AI 提问"></textarea>
+              <button id="send-ai" type="submit" aria-label="发送 AI 消息">↑</button>
+            </form>
+          </aside>
+
+          <div id="ai-resizer" class="panel-resizer" role="separator" tabindex="0" aria-label="调整 AI 面板宽度" aria-orientation="vertical"></div>
+
+          <section class="terminal-column">
+            <div id="terminal-context" class="terminal-context" hidden>
+              <span class="context-chip" id="context-runtime">Node --</span>
+              <span class="context-chip" id="context-directory">~</span>
+              <span class="context-chip" id="context-branch">无 Git 分支</span>
+              <span class="context-chip" id="context-changes">0 changes</span>
+              <code id="context-command"></code>
+            </div>
+            <section id="blocks" class="blocks" aria-label="命令工作区">
+              <section id="terminal" class="terminal-block" aria-label="终端输出"></section>
+
+              <div id="empty-search" class="empty-search" hidden>
+                <span>⌕</span>
+                <strong>没有匹配的命令</strong>
+                <p>试试其他关键词，或按 Esc 清除搜索。</p>
+              </div>
+            </section>
+          </section>
+
+          <div id="widgets-resizer" class="panel-resizer" role="separator" tabindex="0" aria-label="调整右侧面板宽度" aria-orientation="vertical"></div>
+
+          <aside id="widgets-panel" class="widgets-panel" aria-label="工作区组件">
+            <section id="metrics-widget" class="widget metrics-widget">
+              <header class="panel-header">
+                <div><span class="panel-icon">⌁</span><strong id="processor-kind">GPU</strong></div>
+                <span id="processor-value">--%</span>
+              </header>
+              <div class="metric-name" id="processor-name">正在检测图形处理器…</div>
+              <svg class="metrics-chart" viewBox="0 0 300 120" preserveAspectRatio="none" aria-label="处理器使用率趋势">
+                <defs>
+                  <linearGradient id="metric-fill" x1="0" x2="0" y1="0" y2="1">
+                    <stop offset="0%" stop-color="#56b24d" stop-opacity=".35" />
+                    <stop offset="100%" stop-color="#56b24d" stop-opacity="0" />
+                  </linearGradient>
+                </defs>
+                <path id="metrics-area" fill="url(#metric-fill)"></path>
+                <polyline id="metrics-line" fill="none" stroke="#56b24d" stroke-width="2"></polyline>
+              </svg>
+              <div class="metric-footer"><span>内存</span><strong id="memory-value">-- / --</strong></div>
+            </section>
+
+            <section id="files-widget" class="widget files-widget">
+              <header class="panel-header">
+                <div><span class="panel-icon">▰</span><strong>文件</strong></div>
+                <div class="panel-actions">
+                  <button id="files-up" type="button" aria-label="上级目录">↑</button>
+                  <button id="files-refresh" type="button" aria-label="刷新">↻</button>
+                </div>
+              </header>
+              <div id="files-path" class="files-path">~</div>
+              <div class="file-columns"><span>名称</span><span>大小</span></div>
+              <div id="file-list" class="file-list" aria-live="polite"></div>
+            </section>
+          </aside>
+        </div>
+      </section>
     </main>
     <script type="module" src="/src.ts"></script>
   </body>

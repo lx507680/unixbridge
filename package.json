@@ -13,7 +13,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "e2e": "npm run build && playwright test",
-    "package": "npm run build && electron-builder --win --x64",
+    "package": "npm run package:mac",
+    "package:mac": "npm run build && electron-builder --mac dmg --config.electronDist=node_modules/electron/dist",
+    "package:win": "npm run build && electron-builder --win nsis --x64 --config.npmRebuild=false",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
@@ -42,7 +44,16 @@
       "package.json"
     ],
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "artifactName": "${productName}-${version}-setup-${arch}.${ext}"
+    },
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.developer-tools",
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "dmg": {
+      "title": "${productName} ${version}"
     }
   },
   "engines": {

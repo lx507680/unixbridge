@@ -22,6 +22,10 @@ Unix-semantics 命令层执行，并为管道和界面保留结构化结果。
 - ShellState、OutputBlock、命令 registry 接口。
 - 支持 `-l -a -h -R` 的结构化 `ls` 实现草稿。
 - deny / confirm / warn / allow RiskPolicy。
+- Wave 风格可配置多面板工作区，可独立开关 AI、系统指标和文件浏览器。
+- 本地 OpenAI-compatible / API Key AI 接入；API Key 只保存在主进程内存。
+- NVIDIA GPU 使用率检测（不可用时明确降级为 CPU）和内存趋势展示。
+- 当前用户目录内的只读文件浏览器、布局预设与面板宽度设置。
 - 11 个单元测试和 Electron 启动 e2e 烟测。
 
 尚未完成：
@@ -68,14 +72,17 @@ npm run dev
 npm run typecheck
 npm test
 npm run e2e
-npm run package
+npm run package:mac
+npm run package:win
 ```
 
 - `npm run dev`：启动 Electron 开发模式。
 - `npm test`：运行 parser、registry、`ls`、RiskPolicy 单元测试。
 - `npm run e2e`：先构建，再运行 Electron 启动烟测。
-- `npm run package`：构建 Windows NSIS 安装包；应在 Windows 主机执行，避免
-  node-pty 原生模块 ABI/平台不匹配。
+- `npm run package` / `npm run package:mac`：构建当前 Apple Silicon 开发机使用的
+  macOS DMG；开发包未签名，首次打开时需要在系统设置中确认。
+- `npm run package:win`：构建 Windows x64 NSIS `.exe`。依赖包内的 Windows
+  `node-pty` 预编译模块，发布前仍应在 Windows 10/11 实机验证 ConPTY。
 
 如果 Vite 报告 `node:fs/promises` 缺少导出，请先执行 `node -v`。项目要求 Node.js
 20 或更高版本，推荐 Node.js 22 LTS。

@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain, type IpcMainEvent, type IpcMainInvokeEvent
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import * as pty from 'node-pty'
+import { registerWorkspaceIpc } from './workspace-ipc'
 
 const sessions = new Map<number, pty.IPty>()
 
@@ -105,7 +106,7 @@ function createWindow(): void {
     height: 720,
     minWidth: 640,
     minHeight: 420,
-    backgroundColor: '#0b0f14',
+    backgroundColor: '#f5f5f5',
     title: 'unixbridge',
     webPreferences: {
       preload: join(__dirname, '../preload/index.cjs'),
@@ -126,6 +127,7 @@ function createWindow(): void {
 
 app.whenReady().then(() => {
   registerPtyIpc()
+  registerWorkspaceIpc(isTrustedSender)
   createWindow()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
