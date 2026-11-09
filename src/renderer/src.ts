@@ -288,7 +288,18 @@ function renderSessionList(): void {
       if (activeSessionId !== session.id) switchSession(session.id)
       setSessionEditorOpen(sessionEditor.hidden)
     })
-    card.append(button, edit)
+
+    const remove = document.createElement('button')
+    remove.type = 'button'
+    remove.className = 'session-remove'
+    remove.textContent = '×'
+    remove.setAttribute('aria-label', `删除 ${session.name}`)
+    remove.title = '删除终端会话'
+    remove.addEventListener('click', (event) => {
+      event.stopPropagation()
+      removeSession(session.id)
+    })
+    card.append(button, edit, remove)
     sessionList.append(card)
   }
 }
@@ -306,6 +317,29 @@ function switchSession(sessionId: string): void {
     resizeActiveTerminal()
     terminal.focus()
   })
+}
+
+function removeSession(sessionId: string): void {
+  const wasActive = sessionId === activeSessionId
+  if (!uiSessions.delete(sessionId)) return
+  window.unixbridge.dispose(sessionId)
+
+  if (!wasActive) {
+    renderSessionList()
+    return
+  }
+
+  setSessionEditorOpen(false)
+  const nextSession = [...uiSessions.values()].at(-1)
+  if (nextSession) {
+    switchSession(nextSession.id)
+    return
+  }
+
+  activeSessionId = ''
+  terminal.reset()
+  renderSessionList()
+  void startSession()
 }
 
 function saveAndApplyAppearance(): void {

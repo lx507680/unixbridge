@@ -26,7 +26,7 @@ Unix-semantics 命令层执行，并为管道和界面保留结构化结果。
 - 本地 OpenAI-compatible / API Key AI 接入；API Key 只保存在主进程内存。
 - NVIDIA GPU 使用率检测（不可用时明确降级为 CPU）和内存趋势展示。
 - 当前用户目录内的只读文件浏览器、布局预设与面板宽度设置。
-- 11 个单元测试和 Electron 启动 e2e 烟测。
+- 15 个单元测试和 Electron 启动 e2e 烟测。
 
 尚未完成：
 

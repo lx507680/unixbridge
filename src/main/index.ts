@@ -122,6 +122,12 @@ function registerPtyIpc(): void {
       Math.max(1, Math.floor(request.rows))
     )
   })
+
+  ipcMain.on('pty:dispose', (event, request: { sessionId: string }) => {
+    if (!isTrustedSender(event)) return
+    const session = sessions.get(request?.sessionId)
+    if (session?.ownerId === event.sender.id) disposeSession(request.sessionId)
+  })
 }
 
 function createWindow(): void {

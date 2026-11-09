@@ -1057,6 +1057,12 @@ body[data-theme="dark"] .session-item.is-active {
   border-color: color-mix(in srgb, var(--session-card-color, var(--session-color)) 52%, var(--border));
 }
 
+.session-item,
+.session-item:hover,
+.session-item.is-active {
+  padding-right: 66px;
+}
+
 .session-list {
   display: grid;
   gap: 5px;
@@ -1066,10 +1072,10 @@ body[data-theme="dark"] .session-item.is-active {
   position: relative;
 }
 
-.session-edit {
+.session-edit,
+.session-remove {
   position: absolute;
   top: 7px;
-  right: 6px;
   width: 27px;
   height: 24px;
   border: 0;
@@ -1081,19 +1087,33 @@ body[data-theme="dark"] .session-item.is-active {
   cursor: pointer;
 }
 
+.session-edit {
+  right: 33px;
+}
+
+.session-remove {
+  right: 6px;
+  font-size: 16px;
+  opacity: .6;
+}
+
 .session-card:hover .session-edit,
+.session-card:hover .session-remove,
 .session-edit:focus-visible,
+.session-remove:focus-visible,
 .session-edit.is-active {
   opacity: 1;
 }
 
 .session-edit:hover,
-.session-edit.is-active {
+.session-edit.is-active,
+.session-remove:hover {
   background: rgb(255 255 255 / 48%);
 }
 
 body[data-theme="dark"] .session-edit:hover,
-body[data-theme="dark"] .session-edit.is-active {
+body[data-theme="dark"] .session-edit.is-active,
+body[data-theme="dark"] .session-remove:hover {
   background: rgb(0 0 0 / 20%);
 }
 
@@ -1610,6 +1630,22 @@ body.sidebar-collapsed .sidebar {
   background: var(--panel-hover);
   box-shadow: none;
   color: var(--muted);
+}
+
+#toggle-ai,
+#toggle-ai:not(.is-active) {
+  overflow: hidden;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+#toggle-ai img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
 }
 
 .sidebar-module-nav {

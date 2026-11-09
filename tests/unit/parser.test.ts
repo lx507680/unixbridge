@@ -38,4 +38,18 @@ describe('parseCommandLine', () => {
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.diagnostics[0]?.code).toBe('UNCLOSED_QUOTE')
   })
+
+  it('preserves Windows drive and UNC path separators', () => {
+    const driveResult = parseCommandLine('cat C:\\Users\\tester\\notes.txt')
+    expect(driveResult.ok).toBe(true)
+    if (driveResult.ok && driveResult.ast.kind === 'command') {
+      expect(driveResult.ast.args).toEqual(['C:\\Users\\tester\\notes.txt'])
+    }
+
+    const uncResult = parseCommandLine('ls "\\\\server\\share\\project files"')
+    expect(uncResult.ok).toBe(true)
+    if (uncResult.ok && uncResult.ast.kind === 'command') {
+      expect(uncResult.ast.args).toEqual(['\\\\server\\share\\project files'])
+    }
+  })
 })

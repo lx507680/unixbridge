@@ -30,6 +30,8 @@ test('opens the Warp-like workspace and runs a command', async () => {
     await expect(window).toHaveTitle('unixbridge')
     await expect(window.locator('.sidebar')).toBeVisible()
     await expect(window.locator('#terminal')).toBeVisible()
+    await expect(window.locator('#toggle-ai img')).toBeVisible()
+    await expect(window.locator('#toggle-ai img')).toHaveAttribute('src', /unixbridge-icon/)
     await expect(window.locator('#session-status')).not.toHaveText('正在启动终端…', {
       timeout: 15_000
     })
@@ -39,6 +41,20 @@ test('opens the Warp-like workspace and runs a command', async () => {
     } else {
       await expect(window.locator('#session-status')).toContainText('开发 shell · 非 ConPTY')
     }
+
+    await window.locator('#terminal').click()
+    await window.keyboard.type(
+      process.platform === 'win32'
+        ? 'Write-Output __POWERSHELL_NATIVE_OK__'
+        : "printf '__NATIVE_UNIX_OK__\\n'"
+    )
+    await window.keyboard.press('Enter')
+    await expect(window.locator('.xterm-rows')).toContainText(
+      process.platform === 'win32' ? '__POWERSHELL_NATIVE_OK__' : '__NATIVE_UNIX_OK__'
+    )
+    await window.keyboard.type('echo __UNIX_STYLE_OK__')
+    await window.keyboard.press('Enter')
+    await expect(window.locator('.xterm-rows')).toContainText('__UNIX_STYLE_OK__')
 
     await window.locator('#new-session').click()
     await expect(window.locator('.session-card')).toHaveCount(2)
@@ -222,6 +238,12 @@ test('opens the Warp-like workspace and runs a command', async () => {
 
     await search.press('Escape')
     await expect(window.locator('#command-search-results')).toBeHidden()
+
+    const sessionCountBeforeDelete = await window.locator('.session-card').count()
+    await window.locator('.session-card:has(.session-item.is-active) .session-remove').click()
+    await expect(window.locator('.session-card')).toHaveCount(sessionCountBeforeDelete - 1)
+    await expect(window.locator('#session-count')).toHaveText(String(sessionCountBeforeDelete - 1))
+    await expect(window.locator('.session-item.is-active')).toHaveCount(1)
   } finally {
     await application.close()
     await new Promise<void>((resolve) => aiServer.close(() => resolve()))

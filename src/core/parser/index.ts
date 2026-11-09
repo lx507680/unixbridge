@@ -67,8 +67,12 @@ function tokenize(input: string): { tokens: Token[]; diagnostics: ParseDiagnosti
         if (char === quote) {
           quote = undefined
           index += 1
-        } else if (char === '\\' && quote === '"' && index + 1 < input.length) {
-          value += input[index + 1]
+        } else if (
+          char === '\\' &&
+          quote === '"' &&
+          input[index + 1] === '"'
+        ) {
+          value += '"'
           index += 2
         } else {
           value += char

@@ -56,6 +56,7 @@ export interface UnixbridgeApi {
   start: (sessionId: string, cols: number, rows: number) => Promise<PtyStartResult>
   write: (sessionId: string, data: string) => void
   resize: (sessionId: string, cols: number, rows: number) => void
+  dispose: (sessionId: string) => void
   onData: (listener: (sessionId: string, data: string) => void) => () => void
   onExit: (listener: (sessionId: string, exitCode: number) => void) => () => void
   configureAi: (config: AiConfig) => Promise<{ configured: boolean }>
@@ -71,6 +72,7 @@ const api: UnixbridgeApi = {
   write: (sessionId, data) => ipcRenderer.send('pty:write', { sessionId, data }),
   resize: (sessionId, cols, rows) =>
     ipcRenderer.send('pty:resize', { sessionId, cols, rows }),
+  dispose: (sessionId) => ipcRenderer.send('pty:dispose', { sessionId }),
   onData: (listener) => {
     const handler = (
       _event: Electron.IpcRendererEvent,
