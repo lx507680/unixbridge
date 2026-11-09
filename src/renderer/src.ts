@@ -1068,6 +1068,15 @@ function renderSemanticMetadata(
   semanticDetails.hidden = !expanded
   semanticToggle.setAttribute('aria-expanded', String(expanded))
   semanticBlock.hidden = false
+  relayoutTerminal()
+}
+
+function relayoutTerminal(): void {
+  requestAnimationFrame(() => {
+    fitAddon.fit()
+    resizeActiveTerminal()
+    terminal.scrollToBottom()
+  })
 }
 
 function toggleSemanticDetails(): void {
@@ -1075,6 +1084,7 @@ function toggleSemanticDetails(): void {
   const expanded = semanticDetails.hidden
   semanticDetails.hidden = !expanded
   semanticToggle.setAttribute('aria-expanded', String(expanded))
+  relayoutTerminal()
 }
 
 semanticToggle.addEventListener('click', () => toggleSemanticDetails())
