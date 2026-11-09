@@ -170,36 +170,6 @@ tests/
 3. 确认目录带 `/`、隐藏文件存在、错误不会令进程崩溃、成功 exit code 为 0。
 4. Windows 上运行 `npm run e2e`，确认标题栏显示 `PowerShell · ConPTY`。
 
-## 上传到 Git 仓库
-
-首次上传时，将下面的仓库地址替换为你自己的地址：
-
-```bash
-git init
-git add .
-git commit -m "feat: initialize unixbridge M0"
-git branch -M main
-git remote add origin git@github.com:lx507680/unixbridge.git
-git push -u origin main
-```
-
-如果仓库已经配置过 `origin`：
-
-```bash
-git remote set-url origin git@github.com:lx507680/unixbridge.git
-git add .
-git commit -m "docs: update project documentation"
-git push
-```
-
-提交前建议执行：
-
-```bash
-npm run typecheck
-npm test
-npm run e2e
-```
-
 ## 贡献
 
 欢迎提交 issue 和 pull request。涉及命令语义、安全策略或 fallback 的改动，请同时提供：
