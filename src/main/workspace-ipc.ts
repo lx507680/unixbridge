@@ -1,4 +1,4 @@
-import { ipcMain, type IpcMainInvokeEvent } from 'electron'
+import { ipcMain, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron'
 import { execFile } from 'node:child_process'
 import { readdir, stat } from 'node:fs/promises'
 import { cpus, freemem, homedir, totalmem } from 'node:os'
@@ -89,7 +89,7 @@ function resolveSafePath(requested?: string): string {
 }
 
 export function registerWorkspaceIpc(
-  isTrustedSender: (event: IpcMainInvokeEvent) => boolean
+  isTrustedSender: (event: IpcMainEvent | IpcMainInvokeEvent) => boolean
 ): void {
   ipcMain.handle('ai:configure', (event, config: AiConfig) => {
     if (!isTrustedSender(event)) throw new Error('拒绝不受信任的 AI 配置请求')
@@ -137,6 +137,100 @@ export function registerWorkspaceIpc(
     if (!content) throw new Error('AI 服务未返回有效内容')
     return { content }
   })
+
+  ipcMain.on(
+    'ai:chat-stream',
+    (
+      event,
+      payload: { requestId: string; messages: ChatMessage[] }
+    ) => {
+      if (!isTrustedSender(event)) return
+      const send = (type: 'chunk' | 'done' | 'error', content = ''): void => {
+        if (!event.sender.isDestroyed()) {
+          event.sender.send('ai:stream', { requestId: payload.requestId, type, content })
+        }
+      }
+
+      void (async () => {
+        try {
+          const config = aiConfigs.get(event.sender.id)
+          if (!config) throw new Error('请先在设置中保存 AI 配置')
+          if (
+            !Array.isArray(payload.messages) ||
+            payload.messages.length === 0 ||
+            payload.messages.length > 40
+          ) {
+            throw new Error('无效的对话消息')
+          }
+          const messages = payload.messages.map((message) => ({
+            role: message.role,
+            content: String(message.content ?? '').slice(0, 20_000)
+          }))
+          const response = await fetch(config.endpoint, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Accept: 'text/event-stream',
+              ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {})
+            },
+            body: JSON.stringify({ model: config.model, messages, stream: true }),
+            signal: AbortSignal.timeout(60_000)
+          })
+          if (!response.ok) {
+            const detail = (await response.text()).slice(0, 300)
+            if (response.status === 401 || response.status === 403) {
+              throw new Error('AI 鉴权失败，请检查 API Key 是否正确或已过期')
+            }
+            throw new Error(`AI 请求失败 (${response.status})${detail ? `：${detail}` : ''}`)
+          }
+
+          if (!response.body) throw new Error('AI 服务未返回可读取的数据流')
+          const contentType = response.headers.get('content-type') ?? ''
+          if (!contentType.includes('text/event-stream')) {
+            const result = (await response.json()) as {
+              choices?: Array<{ message?: { content?: string } }>
+            }
+            const content = result.choices?.[0]?.message?.content
+            if (!content) throw new Error('AI 服务未返回有效内容')
+            send('chunk', content)
+            send('done')
+            return
+          }
+
+          const reader = response.body.getReader()
+          const decoder = new TextDecoder()
+          let buffer = ''
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) break
+            buffer += decoder.decode(value, { stream: true })
+            const lines = buffer.split(/\r?\n/)
+            buffer = lines.pop() ?? ''
+            for (const line of lines) {
+              if (!line.startsWith('data:')) continue
+              const data = line.slice(5).trim()
+              if (!data || data === '[DONE]') continue
+              try {
+                const packet = JSON.parse(data) as {
+                  choices?: Array<{ delta?: { content?: string }; message?: { content?: string } }>
+                }
+                const chunk =
+                  packet.choices?.[0]?.delta?.content ??
+                  packet.choices?.[0]?.message?.content ??
+                  ''
+                if (chunk) send('chunk', chunk)
+              } catch {
+                // Ignore malformed keep-alive packets from compatible providers.
+              }
+            }
+          }
+          send('done')
+        } catch (error) {
+          send('error', error instanceof Error ? error.message : String(error))
+        }
+      })()
+    }
+  )
 
   ipcMain.handle('system:metrics', async (event) => {
     if (!isTrustedSender(event)) throw new Error('拒绝不受信任的系统指标请求')

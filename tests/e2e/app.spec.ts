@@ -4,8 +4,19 @@ import { once } from 'node:events'
 
 test('opens the Warp-like workspace and runs a command', async () => {
   const aiServer = createServer((_request, response) => {
-    response.writeHead(200, { 'Content-Type': 'application/json' })
-    response.end(JSON.stringify({ choices: [{ message: { content: 'AI e2e response' } }] }))
+    response.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache'
+    })
+    response.write(
+      `data: ${JSON.stringify({ choices: [{ delta: { content: '**AI e2e**\n\n- ' } }] })}\n\n`
+    )
+    setTimeout(() => {
+      response.write(
+        `data: ${JSON.stringify({ choices: [{ delta: { content: 'response\n\n```sh\necho ok\n```' } }] })}\n\n`
+      )
+      response.end('data: [DONE]\n\n')
+    }, 40)
   })
   aiServer.listen(0, '127.0.0.1')
   await once(aiServer, 'listening')
@@ -29,6 +40,22 @@ test('opens the Warp-like workspace and runs a command', async () => {
       await expect(window.locator('#session-status')).toContainText('开发 shell · 非 ConPTY')
     }
 
+    await window.locator('#new-session').click()
+    await expect(window.locator('.session-card')).toHaveCount(2)
+    await expect(window.locator('#session-count')).toHaveText('2')
+    await expect(window.locator('.session-item.is-active strong')).toHaveText('终端 2')
+    await window.locator('#terminal').click()
+    await window.keyboard.type('echo second-session')
+    await window.keyboard.press('Enter')
+    await expect(window.locator('.xterm-rows')).toContainText('second-session')
+    await window.locator('.session-item').first().click()
+    await window.locator('#terminal').click()
+    await window.keyboard.type('echo first-session')
+    await window.keyboard.press('Enter')
+    await expect(window.locator('.xterm-rows')).toContainText('first-session')
+    await window.locator('.session-item').nth(1).click()
+    await expect(window.locator('.xterm-rows')).toContainText('second-session')
+
     await expect(window.locator('.sidebar-tools #command-search')).toBeVisible()
     await expect(window.locator('#command-form')).toHaveCount(0)
     await window.locator('#top-settings').click()
@@ -39,15 +66,73 @@ test('opens the Warp-like workspace and runs a command', async () => {
     await aiToggle.check()
     await metricsToggle.check()
     await filesToggle.check()
+    await window.locator('#settings-width').fill('320')
+
+    for (const width of [1024, 1280, 1440]) {
+      await application.evaluate(
+        ({ BrowserWindow }, size) => {
+          BrowserWindow.getAllWindows()[0]?.setSize(size.width, size.height)
+        },
+        { width, height: 900 }
+      )
+      await window.waitForTimeout(250)
+      const terminalBox = await window.locator('.terminal-column').boundingBox()
+      const settingsBox = await window.locator('#settings-popover').boundingBox()
+      if (!terminalBox || !settingsBox) throw new Error(`${width}px 下设置面板不可见`)
+      expect(terminalBox.width).toBeGreaterThan(280)
+      expect(terminalBox.x + terminalBox.width).toBeLessThanOrEqual(settingsBox.x + 1)
+    }
+
+    const terminalWidthWithSettings =
+      (await window.locator('.terminal-column').boundingBox())?.width ?? 0
+    const settingsBeforeDrag = await window.locator('#settings-popover').boundingBox()
+    const settingsHandle = await window.locator('#settings-resizer').boundingBox()
+    if (!settingsBeforeDrag || !settingsHandle) throw new Error('设置面板拖拽手柄不可见')
+    await window.mouse.move(settingsHandle.x + settingsHandle.width / 2, settingsHandle.y + 100)
+    await window.mouse.down()
+    await window.mouse.move(settingsHandle.x - 40, settingsHandle.y + 100)
+    await window.mouse.up()
+    await expect
+      .poll(async () => (await window.locator('#settings-popover').boundingBox())?.width ?? 0)
+      .toBeGreaterThan(settingsBeforeDrag.width)
+    const draggedSettingsWidth =
+      (await window.locator('#settings-popover').boundingBox())?.width ?? 0
+    expect(draggedSettingsWidth).toBeGreaterThanOrEqual(280)
+    expect(draggedSettingsWidth).toBeLessThanOrEqual(420)
+
+    await window.locator('#top-settings').click()
+    await expect
+      .poll(async () => (await window.locator('.terminal-column').boundingBox())?.width ?? 0)
+      .toBeGreaterThan(terminalWidthWithSettings)
+
+    for (const width of [1024, 1280, 1440]) {
+      await application.evaluate(
+        ({ BrowserWindow }, size) => {
+          BrowserWindow.getAllWindows()[0]?.setSize(size.width, size.height)
+        },
+        { width, height: 900 }
+      )
+      await window.waitForTimeout(100)
+      const terminalBox = await window.locator('.terminal-column').boundingBox()
+      const systemBox = await window.locator('#widgets-panel').boundingBox()
+      if (!terminalBox || !systemBox) throw new Error(`${width}px 下系统面板不可见`)
+      expect(terminalBox.width).toBeGreaterThan(260)
+      expect(terminalBox.x + terminalBox.width).toBeLessThanOrEqual(systemBox.x + 1)
+    }
+
     await expect(window.locator('#ai-panel')).toBeVisible()
     await expect(window.locator('#file-list .file-row').first()).toBeVisible({ timeout: 15_000 })
     await expect(window.locator('#processor-value')).not.toHaveText('--%', { timeout: 15_000 })
+    await window.locator('#top-settings').click()
 
     await window.locator('[data-setting="theme"] [data-value="light"]').click()
     await window.locator('[data-setting="density"] [data-value="comfortable"]').click()
     await window.locator('[data-setting="layout"] [data-value="terminal"]').click()
     await expect(window.locator('body')).toHaveAttribute('data-layout', 'terminal')
     await window.locator('[data-setting="layout"] [data-value="balanced"]').click()
+    await window.locator('#font-size').fill('16')
+    await expect(window.locator('#font-size-value')).toHaveText('16px')
+    await window.locator('#font-family').selectOption('JetBrains Mono')
 
     await aiToggle.uncheck()
     await metricsToggle.uncheck()
@@ -92,8 +177,15 @@ test('opens the Warp-like workspace and runs a command', async () => {
       .toBeGreaterThan(aiPanelBeforeDrag.width)
 
     await window.locator('#ai-input').fill('测试 AI')
-    await window.locator('#ai-form').evaluate((form: HTMLFormElement) => form.requestSubmit())
-    await expect(window.locator('.ai-message.is-assistant').last()).toContainText('AI e2e response')
+    await window.locator('#ai-input').press('Enter')
+    await expect(window.locator('.ai-message.is-assistant').last()).toContainText('response')
+    await expect(
+      window.locator('.ai-message.is-assistant').last().locator('.ai-message-content strong')
+    ).toHaveText('AI e2e')
+    await expect(window.locator('.ai-message.is-assistant').last().locator('li')).toHaveText('response')
+    await expect(window.locator('.ai-message.is-assistant').last().locator('pre code')).toHaveText(
+      'echo ok'
+    )
 
     await window.locator('#toggle-ai').click()
     await expect(window.locator('#ai-panel')).toBeHidden()
@@ -105,7 +197,7 @@ test('opens the Warp-like workspace and runs a command', async () => {
     )
     await window.screenshot({ path: 'test-results/unixbridge-workspace.png' })
 
-    await window.locator('#edit-session').click()
+    await window.locator('.session-card:has(.session-item.is-active) .session-edit').click()
     await expect(window.locator('#session-editor')).toBeVisible()
     await window.locator('#session-name').fill('开发环境')
     await window.locator('[data-color="#d78db5"]').click()
@@ -118,16 +210,18 @@ test('opens the Warp-like workspace and runs a command', async () => {
     await window.keyboard.type('echo unixbridge-e2e')
     await window.keyboard.press('Enter')
     await expect(window.locator('.xterm-rows')).toContainText('unixbridge-e2e')
+    await window.keyboard.type('ls -la')
+    await window.keyboard.press('Enter')
 
     const search = window.locator('#command-search')
-    await search.fill('开发环境')
-    await expect(window.locator('.terminal-block')).toBeVisible()
+    await search.fill('ls -la')
+    await expect(window.locator('#command-search-results button')).toHaveText('ls -la')
 
     await search.fill('missing-command')
-    await expect(window.locator('#empty-search')).toBeVisible()
+    await expect(window.locator('.search-result-empty')).toBeVisible()
 
     await search.press('Escape')
-    await expect(window.locator('.terminal-block')).toBeVisible()
+    await expect(window.locator('#command-search-results')).toBeHidden()
   } finally {
     await application.close()
     await new Promise<void>((resolve) => aiServer.close(() => resolve()))

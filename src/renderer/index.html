@@ -36,6 +36,7 @@
           >☷</button>
           <button id="new-session" class="icon-button tool-button add-button" type="button" aria-label="新建终端会话" title="新建终端会话">＋</button>
         </div>
+        <div id="command-search-results" class="command-search-results" aria-live="polite" hidden></div>
 
         <nav class="sidebar-module-nav" aria-label="工作区模块">
           <button class="is-active" type="button" data-module="terminal"><span>›_</span>终端</button>
@@ -45,6 +46,10 @@
         </nav>
 
         <section id="settings-popover" class="settings-popover" aria-label="布局与显示设置" hidden>
+          <header class="settings-header">
+            <div><strong>设置</strong><span>界面、终端与 AI</span></div>
+            <button id="close-settings" class="icon-button" type="button" aria-label="关闭设置">×</button>
+          </header>
           <div class="settings-group">
             <span class="settings-label">显示方式</span>
             <div class="segmented-control" data-setting="view">
@@ -89,7 +94,24 @@
             <input id="ai-width" type="range" min="200" max="420" step="10" value="220" />
             <label>右侧面板宽度 <output id="widgets-width-value">240px</output></label>
             <input id="widgets-width" type="range" min="220" max="420" step="10" value="240" />
+            <label>设置面板宽度 <output id="settings-width-value">320px</output></label>
+            <input id="settings-width" type="range" min="280" max="420" step="10" value="320" />
           </div>
+          <fieldset class="settings-group typography-settings">
+            <legend>终端字体</legend>
+            <label>
+              字体
+              <select id="font-family">
+                <option value="Cascadia Code">Cascadia Code</option>
+                <option value="JetBrains Mono">JetBrains Mono</option>
+                <option value="SF Mono">SF Mono</option>
+                <option value="Menlo">Menlo</option>
+                <option value="Consolas">Consolas</option>
+              </select>
+            </label>
+            <label class="range-label">字号 <output id="font-size-value">12px</output></label>
+            <input id="font-size" type="range" min="10" max="24" step="1" value="12" />
+          </fieldset>
           <div class="settings-group ai-settings">
             <span class="settings-label">AI 服务</span>
             <div class="segmented-control" data-setting="ai-provider">
@@ -114,22 +136,9 @@
         <div class="sidebar-section">
           <div class="section-label">
             <span>终端会话</span>
-            <span class="session-count">1</span>
+            <span id="session-count" class="session-count">0</span>
           </div>
-          <div class="session-card">
-            <button class="session-item is-active" type="button">
-              <span class="session-icon">›_</span>
-              <span class="session-copy">
-                <strong id="session-title">本地终端</strong>
-                <small id="session-platform">正在连接…</small>
-                <small class="session-metadata">
-                  <span data-metadata="branch">⌘ main</span>
-                  <span data-metadata="directory">~/workspace</span>
-                </small>
-              </span>
-            </button>
-            <button id="edit-session" class="session-edit" type="button" aria-label="编辑会话标签和颜色" title="编辑会话">•••</button>
-          </div>
+          <div id="session-list" class="session-list"></div>
           <section id="session-editor" class="session-editor" aria-label="编辑会话" hidden>
             <label for="session-name">会话标签</label>
             <input id="session-name" type="text" maxlength="30" value="本地终端" />
@@ -181,7 +190,7 @@
               </div>
             </div>
             <form id="ai-form" class="ai-composer">
-              <textarea id="ai-input" rows="2" placeholder="向 AI 提问…" aria-label="向 AI 提问"></textarea>
+              <textarea id="ai-input" rows="1" placeholder="向 AI 提问…（Enter 发送）" aria-label="向 AI 提问，Enter 发送，Shift 加 Enter 换行"></textarea>
               <button id="send-ai" type="submit" aria-label="发送 AI 消息">↑</button>
             </form>
           </aside>
@@ -198,12 +207,6 @@
             </div>
             <section id="blocks" class="blocks" aria-label="命令工作区">
               <section id="terminal" class="terminal-block" aria-label="终端输出"></section>
-
-              <div id="empty-search" class="empty-search" hidden>
-                <span>⌕</span>
-                <strong>没有匹配的命令</strong>
-                <p>试试其他关键词，或按 Esc 清除搜索。</p>
-              </div>
             </section>
           </section>
 
@@ -242,6 +245,7 @@
               <div id="file-list" class="file-list" aria-live="polite"></div>
             </section>
           </aside>
+          <div id="settings-resizer" class="panel-resizer" role="separator" tabindex="0" aria-label="调整设置面板宽度" aria-orientation="vertical" hidden></div>
         </div>
       </section>
     </main>

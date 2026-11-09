@@ -11,18 +11,17 @@ function element<T extends Element>(selector: string): T {
 
 const container = element<HTMLElement>('#terminal')
 const status = element<HTMLElement>('#session-status')
-const sessionPlatform = element<HTMLElement>('#session-platform')
 const commandSearch = element<HTMLInputElement>('#command-search')
-const terminalBlock = element<HTMLElement>('.terminal-block')
-const emptySearch = element<HTMLElement>('#empty-search')
+const commandSearchResults = element<HTMLElement>('#command-search-results')
 const settingsPopover = element<HTMLElement>('#settings-popover')
 const settingsButton = element<HTMLButtonElement>('#view-settings')
 const topSettingsButton = element<HTMLButtonElement>('#top-settings')
-const sessionTitle = element<HTMLElement>('#session-title')
+const closeSettingsButton = element<HTMLButtonElement>('#close-settings')
 const workspaceTitleLabel = element<HTMLElement>('#workspace-title-label')
 const workspaceSubtitle = element<HTMLElement>('#workspace-subtitle')
+const sessionList = element<HTMLElement>('#session-list')
+const sessionCount = element<HTMLElement>('#session-count')
 const sessionEditor = element<HTMLElement>('#session-editor')
-const editSessionButton = element<HTMLButtonElement>('#edit-session')
 const sessionNameInput = element<HTMLInputElement>('#session-name')
 const aiPanel = element<HTMLElement>('#ai-panel')
 const metricsWidget = element<HTMLElement>('#metrics-widget')
@@ -31,10 +30,16 @@ const widgetsPanel = element<HTMLElement>('#widgets-panel')
 const workbench = element<HTMLElement>('#workbench')
 const aiResizer = element<HTMLElement>('#ai-resizer')
 const widgetsResizer = element<HTMLElement>('#widgets-resizer')
+const settingsResizer = element<HTMLElement>('#settings-resizer')
 const aiWidthInput = element<HTMLInputElement>('#ai-width')
 const widgetsWidthInput = element<HTMLInputElement>('#widgets-width')
 const aiWidthValue = element<HTMLOutputElement>('#ai-width-value')
 const widgetsWidthValue = element<HTMLOutputElement>('#widgets-width-value')
+const fontSizeInput = element<HTMLInputElement>('#font-size')
+const fontSizeValue = element<HTMLOutputElement>('#font-size-value')
+const fontFamilyInput = element<HTMLSelectElement>('#font-family')
+const settingsWidthInput = element<HTMLInputElement>('#settings-width')
+const settingsWidthValue = element<HTMLOutputElement>('#settings-width-value')
 const aiForm = element<HTMLFormElement>('#ai-form')
 const aiInput = element<HTMLTextAreaElement>('#ai-input')
 const aiMessages = element<HTMLElement>('#ai-messages')
@@ -65,6 +70,8 @@ const contextBranch = element<HTMLElement>('#context-branch')
 const contextChanges = element<HTMLElement>('#context-changes')
 const contextCommand = element<HTMLElement>('#context-command')
 
+workbench.append(settingsResizer, settingsPopover)
+
 type ViewMode = 'panes' | 'tabs'
 type Density = 'comfortable' | 'compact'
 type PaneTitle = 'command' | 'directory' | 'branch'
@@ -83,6 +90,9 @@ interface AppearanceSettings {
   panels: string[]
   aiWidth: number
   widgetsWidth: number
+  fontSize: number
+  fontFamily: string
+  settingsWidth: number
 }
 
 const defaultSettings: AppearanceSettings = {
@@ -96,7 +106,10 @@ const defaultSettings: AppearanceSettings = {
   layout: 'balanced',
   panels: ['ai', 'metrics', 'files'],
   aiWidth: 220,
-  widgetsWidth: 240
+  widgetsWidth: 240,
+  fontSize: 12,
+  fontFamily: 'Cascadia Code',
+  settingsWidth: 320
 }
 
 function loadSettings(): AppearanceSettings {
@@ -138,6 +151,14 @@ const chatMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: stri
     content: '你是 unixbridge 终端助手。回答要简洁、安全，危险命令必须明确提示风险。'
   }
 ]
+const commandHistory: string[] = (() => {
+  try {
+    const saved = JSON.parse(localStorage.getItem('unixbridge:command-history') ?? '[]')
+    return Array.isArray(saved) ? saved.filter((item): item is string => typeof item === 'string') : []
+  } catch {
+    return []
+  }
+})()
 const metricHistory: number[] = []
 let currentFilePath: string | undefined
 
@@ -175,7 +196,7 @@ const terminalThemes = {
 const terminal = new Terminal({
   cursorBlink: true,
   convertEol: true,
-  fontFamily: '"Cascadia Code", "JetBrains Mono", Consolas, monospace',
+  fontFamily: `"${appearance.fontFamily}", "Cascadia Code", "JetBrains Mono", Consolas, monospace`,
   fontSize: 12,
   lineHeight: 1.35,
   scrollback: 10_000,
@@ -186,6 +207,107 @@ terminal.loadAddon(fitAddon)
 terminal.open(container)
 fitAddon.fit()
 
+interface UiSession {
+  id: string
+  name: string
+  color: string
+  platform: NodeJS.Platform | null
+  platformLabel: string
+  statusText: string
+  statusState: '' | 'running' | 'stopped'
+  output: string
+  inputBuffer: string
+}
+
+const uiSessions = new Map<string, UiSession>()
+let activeSessionId = ''
+let sessionSequence = 0
+
+function getActiveSession(): UiSession | undefined {
+  return uiSessions.get(activeSessionId)
+}
+
+function resizeActiveTerminal(): void {
+  if (activeSessionId) window.unixbridge.resize(activeSessionId, terminal.cols, terminal.rows)
+}
+
+function sessionDisplayTitle(session: UiSession): string {
+  if (appearance.title === 'directory') return '~/workspace'
+  if (appearance.title === 'branch') return 'main'
+  return session.name
+}
+
+function syncActiveSessionUi(): void {
+  const session = getActiveSession()
+  if (!session) return
+  status.textContent = session.statusText
+  status.dataset.state = session.statusState
+  workspaceTitleLabel.textContent = session.name
+  workspaceSubtitle.textContent = appearance.title === 'branch' ? 'main' : '~/workspace'
+  document.documentElement.style.setProperty('--session-color', session.color)
+  if (document.activeElement !== sessionNameInput) sessionNameInput.value = session.name
+  for (const button of document.querySelectorAll<HTMLButtonElement>('.color-options [data-color]')) {
+    button.classList.toggle('is-selected', button.dataset.color === session.color)
+  }
+}
+
+function renderSessionList(): void {
+  sessionList.replaceChildren()
+  sessionCount.textContent = String(uiSessions.size)
+  for (const session of uiSessions.values()) {
+    const card = document.createElement('div')
+    card.className = 'session-card'
+    card.style.setProperty('--session-card-color', session.color)
+
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.className = `session-item${session.id === activeSessionId ? ' is-active' : ''}`
+    button.dataset.sessionId = session.id
+    button.innerHTML =
+      '<span class="session-icon">›_</span><span class="session-copy"><strong></strong><small></small><small class="session-metadata"><span data-metadata="branch">⌘ main</span><span data-metadata="directory">~/workspace</span></small></span>'
+    const title = button.querySelector('strong')!
+    const platform = button.querySelector<HTMLElement>('.session-copy > small')!
+    title.textContent = sessionDisplayTitle(session)
+    platform.textContent = session.platformLabel
+    if (session.id === activeSessionId) {
+      title.id = 'session-title'
+      platform.id = 'session-platform'
+    }
+    for (const node of button.querySelectorAll<HTMLElement>('[data-metadata]')) {
+      node.hidden = !appearance.metadata.includes(node.dataset.metadata ?? '')
+    }
+    button.addEventListener('click', () => switchSession(session.id))
+
+    const edit = document.createElement('button')
+    edit.type = 'button'
+    edit.className = 'session-edit'
+    edit.textContent = '•••'
+    edit.setAttribute('aria-label', `编辑 ${session.name}`)
+    edit.addEventListener('click', (event) => {
+      event.stopPropagation()
+      if (activeSessionId !== session.id) switchSession(session.id)
+      setSessionEditorOpen(sessionEditor.hidden)
+    })
+    card.append(button, edit)
+    sessionList.append(card)
+  }
+}
+
+function switchSession(sessionId: string): void {
+  const session = uiSessions.get(sessionId)
+  if (!session || sessionId === activeSessionId) return
+  activeSessionId = sessionId
+  terminal.reset()
+  if (session.output) terminal.write(session.output)
+  renderSessionList()
+  syncActiveSessionUi()
+  requestAnimationFrame(() => {
+    fitAddon.fit()
+    resizeActiveTerminal()
+    terminal.focus()
+  })
+}
+
 function saveAndApplyAppearance(): void {
   localStorage.setItem('unixbridge:appearance', JSON.stringify(appearance))
   document.body.dataset.theme = appearance.theme
@@ -193,9 +315,23 @@ function saveAndApplyAppearance(): void {
   document.body.dataset.density = appearance.density
   document.body.dataset.layout = appearance.layout
   terminal.options.theme = terminalThemes[appearance.theme]
+  terminal.options.fontSize = appearance.fontSize
+  terminal.options.fontFamily = `"${appearance.fontFamily}", "Cascadia Code", "JetBrains Mono", Consolas, monospace`
+  document.documentElement.style.setProperty('--ui-font-family', `"${appearance.fontFamily}"`)
+  document.documentElement.style.setProperty('--ui-font-size', `${appearance.fontSize}px`)
+  document.documentElement.style.setProperty(
+    '--ui-font-small',
+    `${Math.max(9, appearance.fontSize - 2)}px`
+  )
+  document.documentElement.style.setProperty(
+    '--ui-font-tiny',
+    `${Math.max(8, appearance.fontSize - 4)}px`
+  )
+  document.documentElement.style.setProperty('--ui-font-large', `${appearance.fontSize + 1}px`)
   document.documentElement.style.setProperty('--session-color', appearance.sessionColor)
   document.documentElement.style.setProperty('--ai-panel-width', `${appearance.aiWidth}px`)
   document.documentElement.style.setProperty('--widgets-panel-width', `${appearance.widgetsWidth}px`)
+  document.documentElement.style.setProperty('--settings-panel-width', `${appearance.settingsWidth}px`)
   const effectiveAiWidth =
     appearance.layout === 'terminal'
       ? Math.min(appearance.aiWidth, 230)
@@ -222,11 +358,15 @@ function saveAndApplyAppearance(): void {
     '--widgets-gutter',
     appearance.panels.includes('metrics') || appearance.panels.includes('files') ? '4px' : '0px'
   )
-  if (document.activeElement !== sessionNameInput) sessionNameInput.value = appearance.sessionName
   aiWidthInput.value = String(appearance.aiWidth)
   widgetsWidthInput.value = String(appearance.widgetsWidth)
   aiWidthValue.value = `${appearance.aiWidth}px`
   widgetsWidthValue.value = `${appearance.widgetsWidth}px`
+  fontSizeInput.value = String(appearance.fontSize)
+  fontSizeValue.value = `${appearance.fontSize}px`
+  fontFamilyInput.value = appearance.fontFamily
+  settingsWidthInput.value = String(appearance.settingsWidth)
+  settingsWidthValue.value = `${appearance.settingsWidth}px`
   aiPanel.hidden = !appearance.panels.includes('ai')
   aiResizer.hidden = !appearance.panels.includes('ai')
   metricsWidget.hidden = !appearance.panels.includes('metrics')
@@ -244,18 +384,8 @@ function saveAndApplyAppearance(): void {
     )
   }
 
-  const titleMap: Record<PaneTitle, string> = {
-    command: appearance.sessionName,
-    directory: '~/workspace',
-    branch: 'main'
-  }
-  sessionTitle.textContent = titleMap[appearance.title]
-  workspaceTitleLabel.textContent = appearance.sessionName
-  workspaceSubtitle.textContent = appearance.title === 'branch' ? 'main' : '~/workspace'
-
-  for (const node of document.querySelectorAll<HTMLElement>('[data-metadata]')) {
-    node.hidden = !appearance.metadata.includes(node.dataset.metadata ?? '')
-  }
+  renderSessionList()
+  syncActiveSessionUi()
 
   for (const group of document.querySelectorAll<HTMLElement>('.segmented-control')) {
     const setting = group.dataset.setting as 'view' | 'density' | 'theme' | 'layout' | 'ai-provider'
@@ -274,13 +404,9 @@ function saveAndApplyAppearance(): void {
   for (const input of document.querySelectorAll<HTMLInputElement>('[data-setting="panels"] input')) {
     input.checked = appearance.panels.includes(input.value)
   }
-  for (const button of document.querySelectorAll<HTMLButtonElement>('.color-options [data-color]')) {
-    button.classList.toggle('is-selected', button.dataset.color === appearance.sessionColor)
-  }
-
   requestAnimationFrame(() => {
     fitAddon.fit()
-    window.unixbridge.resize(terminal.cols, terminal.rows)
+    resizeActiveTerminal()
   })
 }
 
@@ -288,18 +414,41 @@ function setSettingsOpen(open: boolean, origin: 'sidebar' | 'top' = 'sidebar'): 
   const wasOpen = !settingsPopover.hidden
   if (open) setSessionEditorOpen(false)
   settingsPopover.hidden = !open
+  settingsResizer.hidden = !open
+  document.documentElement.style.setProperty(
+    '--settings-column',
+    open ? `${appearance.settingsWidth}px` : '0px'
+  )
+  document.documentElement.style.setProperty('--settings-gutter', open ? '4px' : '0px')
   settingsButton.setAttribute('aria-expanded', String(open))
   settingsButton.classList.toggle('is-active', open)
   topSettingsButton.classList.toggle('is-active', open && origin === 'top')
+  document.body.classList.toggle('settings-open', open)
   document.body.classList.toggle('settings-from-top', open && origin === 'top')
-  if (!open && wasOpen) requestAnimationFrame(() => terminal.focus())
+  requestAnimationFrame(() => {
+    fitAddon.fit()
+    resizeActiveTerminal()
+  })
+  window.setTimeout(() => {
+    if (container.clientWidth > 0) {
+      fitAddon.fit()
+      resizeActiveTerminal()
+    }
+  }, 220)
+  if (!open && wasOpen) {
+    requestAnimationFrame(() => {
+      const session = getActiveSession()
+      if (session) session.inputBuffer = ''
+      terminal.focus()
+    })
+  }
 }
 
 function setSessionEditorOpen(open: boolean): void {
   if (open) setSettingsOpen(false)
   sessionEditor.hidden = !open
-  editSessionButton.classList.toggle('is-active', open)
   if (open) {
+    syncActiveSessionUi()
     sessionNameInput.focus()
     sessionNameInput.select()
   }
@@ -378,37 +527,66 @@ widgetsWidthInput.addEventListener('input', () => {
   appearance.widgetsWidth = Number(widgetsWidthInput.value)
   saveAndApplyAppearance()
 })
+fontSizeInput.addEventListener('input', () => {
+  appearance.fontSize = Number(fontSizeInput.value)
+  saveAndApplyAppearance()
+})
+fontFamilyInput.addEventListener('change', () => {
+  appearance.fontFamily = fontFamilyInput.value
+  saveAndApplyAppearance()
+})
+settingsWidthInput.addEventListener('input', () => {
+  appearance.settingsWidth = Number(settingsWidthInput.value)
+  document.documentElement.style.setProperty('--settings-column', `${appearance.settingsWidth}px`)
+  saveAndApplyAppearance()
+})
+
+let settingsResizeClickPending = false
 
 function installPanelResizer(
   handle: HTMLElement,
-  side: 'ai' | 'widgets'
+  side: 'ai' | 'widgets' | 'settings'
 ): void {
   handle.addEventListener('pointerdown', (event) => {
     event.preventDefault()
+    event.stopPropagation()
+    handle.setPointerCapture(event.pointerId)
+    if (side === 'settings') settingsResizeClickPending = true
     handle.classList.add('is-dragging')
     const startX = event.clientX
-    const startWidth = side === 'ai' ? appearance.aiWidth : appearance.widgetsWidth
+    const startWidth =
+      side === 'ai'
+        ? appearance.aiWidth
+        : side === 'widgets'
+          ? appearance.widgetsWidth
+          : appearance.settingsWidth
 
     const onMove = (moveEvent: PointerEvent): void => {
       const delta = moveEvent.clientX - startX
       const requested = side === 'ai' ? startWidth + delta : startWidth - delta
-      const otherWidth = side === 'ai' ? appearance.widgetsWidth : appearance.aiWidth
-      const minWidth = side === 'ai' ? 200 : 220
-      const maxWidth = Math.max(220, Math.min(420, workbench.clientWidth - otherWidth - 300))
+      const minWidth = side === 'ai' ? 200 : side === 'widgets' ? 220 : 280
+      const maxWidth = 420
       const width = Math.max(minWidth, Math.min(maxWidth, Math.round(requested / 10) * 10))
-      appearance.layout = 'balanced'
       if (side === 'ai') {
+        appearance.layout = 'balanced'
         appearance.aiWidth = width
         aiWidthInput.value = String(width)
         aiWidthValue.value = `${width}px`
         document.documentElement.style.setProperty('--ai-column', `${width}px`)
-      } else {
+      } else if (side === 'widgets') {
+        appearance.layout = 'balanced'
         appearance.widgetsWidth = width
         widgetsWidthInput.value = String(width)
         widgetsWidthValue.value = `${width}px`
         document.documentElement.style.setProperty('--widgets-column', `${width}px`)
+      } else {
+        appearance.settingsWidth = width
+        settingsWidthInput.value = String(width)
+        settingsWidthValue.value = `${width}px`
+        document.documentElement.style.setProperty('--settings-column', `${width}px`)
       }
       fitAddon.fit()
+      resizeActiveTerminal()
     }
 
     const onUp = (): void => {
@@ -416,6 +594,9 @@ function installPanelResizer(
       window.removeEventListener('pointermove', onMove)
       window.removeEventListener('pointerup', onUp)
       saveAndApplyAppearance()
+      window.setTimeout(() => {
+        settingsResizeClickPending = false
+      }, 0)
     }
 
     window.addEventListener('pointermove', onMove)
@@ -427,14 +608,22 @@ function installPanelResizer(
     event.preventDefault()
     const delta = event.key === 'ArrowRight' ? 10 : -10
     if (side === 'ai') appearance.aiWidth = Math.max(200, Math.min(420, appearance.aiWidth + delta))
-    else appearance.widgetsWidth = Math.max(220, Math.min(420, appearance.widgetsWidth - delta))
-    appearance.layout = 'balanced'
+    else if (side === 'widgets') {
+      appearance.widgetsWidth = Math.max(220, Math.min(420, appearance.widgetsWidth - delta))
+    } else {
+      appearance.settingsWidth = Math.max(280, Math.min(420, appearance.settingsWidth - delta))
+    }
+    if (side !== 'settings') appearance.layout = 'balanced'
     saveAndApplyAppearance()
+    if (side === 'settings') {
+      document.documentElement.style.setProperty('--settings-column', `${appearance.settingsWidth}px`)
+    }
   })
 }
 
 installPanelResizer(aiResizer, 'ai')
 installPanelResizer(widgetsResizer, 'widgets')
+installPanelResizer(settingsResizer, 'settings')
 
 function syncAiSettings(): void {
   aiEndpointInput.value = aiPreferences.endpoint
@@ -479,14 +668,119 @@ saveAiConfigButton.addEventListener('click', () => {
   void configureAi().catch(() => undefined)
 })
 
+function appendInlineMarkdown(target: HTMLElement, content: string): void {
+  const tokenPattern = /(\*\*[^*]+\*\*|`[^`]+`|\*[^*]+\*)/g
+  let cursor = 0
+  for (const match of content.matchAll(tokenPattern)) {
+    const index = match.index ?? 0
+    if (index > cursor) target.append(document.createTextNode(content.slice(cursor, index)))
+    const token = match[0]
+    const node =
+      token.startsWith('**') ? document.createElement('strong') :
+        token.startsWith('`') ? document.createElement('code') : document.createElement('em')
+    node.textContent = token.startsWith('**') ? token.slice(2, -2) : token.slice(1, -1)
+    target.append(node)
+    cursor = index + token.length
+  }
+  if (cursor < content.length) target.append(document.createTextNode(content.slice(cursor)))
+}
+
+function renderMarkdown(target: HTMLElement, markdown: string): void {
+  target.replaceChildren()
+  const lines = markdown.replace(/\r\n?/g, '\n').split('\n')
+  let index = 0
+  while (index < lines.length) {
+    const line = lines[index] ?? ''
+    if (line.startsWith('```')) {
+      const language = line.slice(3).trim()
+      const codeLines: string[] = []
+      index += 1
+      while (index < lines.length) {
+        const codeLine = lines[index] ?? ''
+        if (codeLine.startsWith('```')) break
+        codeLines.push(codeLine)
+        index += 1
+      }
+      if (index < lines.length) index += 1
+      const pre = document.createElement('pre')
+      const code = document.createElement('code')
+      if (language) code.dataset.language = language
+      code.textContent = codeLines.join('\n')
+      pre.append(code)
+      target.append(pre)
+      continue
+    }
+
+    const listMatch = line.match(/^(\s*)([-*]|\d+\.)\s+(.+)$/)
+    if (listMatch) {
+      const ordered = /\d+\./.test(listMatch[2] ?? '')
+      const list = document.createElement(ordered ? 'ol' : 'ul')
+      while (index < lines.length) {
+        const itemMatch = (lines[index] ?? '').match(/^(\s*)([-*]|\d+\.)\s+(.+)$/)
+        if (!itemMatch || /\d+\./.test(itemMatch[2] ?? '') !== ordered) break
+        const item = document.createElement('li')
+        appendInlineMarkdown(item, itemMatch[3] ?? '')
+        list.append(item)
+        index += 1
+      }
+      target.append(list)
+      continue
+    }
+
+    const headingMatch = line.match(/^(#{1,4})\s+(.+)$/)
+    if (headingMatch) {
+      const heading = document.createElement(`h${Math.min(4, (headingMatch[1] ?? '').length)}`)
+      appendInlineMarkdown(heading, headingMatch[2] ?? '')
+      target.append(heading)
+      index += 1
+      continue
+    }
+
+    if (line.startsWith('> ')) {
+      const quote = document.createElement('blockquote')
+      appendInlineMarkdown(quote, line.slice(2))
+      target.append(quote)
+      index += 1
+      continue
+    }
+
+    if (!line.trim()) {
+      index += 1
+      continue
+    }
+
+    const paragraphLines = [line]
+    index += 1
+    while (index < lines.length) {
+      const paragraphLine = lines[index] ?? ''
+      if (
+        !paragraphLine.trim() ||
+        /^(#{1,4})\s+|^```|^(\s*)([-*]|\d+\.)\s+|^> /.test(paragraphLine)
+      ) {
+        break
+      }
+      paragraphLines.push(paragraphLine)
+      index += 1
+    }
+    const paragraph = document.createElement('p')
+    paragraphLines.forEach((paragraphLine, lineIndex) => {
+      if (lineIndex > 0) paragraph.append(document.createElement('br'))
+      appendInlineMarkdown(paragraph, paragraphLine)
+    })
+    target.append(paragraph)
+  }
+}
+
 function appendAiMessage(role: 'user' | 'assistant', content: string): HTMLElement {
   aiMessages.querySelector('.ai-welcome')?.remove()
   const message = document.createElement('div')
   message.className = `ai-message is-${role}`
   const label = document.createElement('strong')
   label.textContent = role === 'user' ? '你' : 'AI'
-  const body = document.createElement('p')
-  body.textContent = content
+  const body = document.createElement('div')
+  body.className = 'ai-message-content'
+  if (role === 'assistant') renderMarkdown(body, content)
+  else body.textContent = content
   message.append(label, body)
   aiMessages.append(message)
   aiMessages.scrollTop = aiMessages.scrollHeight
@@ -498,26 +792,43 @@ aiForm.addEventListener('submit', (event) => {
   const content = aiInput.value.trim()
   if (!content || sendAiButton.disabled) return
   aiInput.value = ''
+  aiInput.style.height = ''
   chatMessages.push({ role: 'user', content })
   appendAiMessage('user', content)
-  const pending = appendAiMessage('assistant', '正在思考…')
+  const pending = appendAiMessage('assistant', '')
+  const pendingBody = pending.querySelector<HTMLElement>('.ai-message-content')!
   sendAiButton.disabled = true
 
   void (async () => {
     try {
       await configureAi(false)
-      const response = await window.unixbridge.chat(chatMessages)
-      pending.remove()
-      chatMessages.push({ role: 'assistant', content: response.content })
-      appendAiMessage('assistant', response.content)
+      let streamedContent = ''
+      await window.unixbridge.chatStream(chatMessages, (chunk) => {
+        streamedContent += chunk
+        renderMarkdown(pendingBody, streamedContent)
+        aiMessages.scrollTop = aiMessages.scrollHeight
+      })
+      if (!streamedContent) renderMarkdown(pendingBody, 'AI 服务未返回内容')
+      else chatMessages.push({ role: 'assistant', content: streamedContent })
     } catch (error) {
-      pending.querySelector('p')!.textContent = error instanceof Error ? error.message : String(error)
+      pendingBody.textContent = error instanceof Error ? error.message : String(error)
       pending.classList.add('is-error')
     } finally {
       sendAiButton.disabled = false
       aiInput.focus()
     }
   })()
+})
+
+aiInput.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return
+  event.preventDefault()
+  aiForm.requestSubmit()
+})
+
+aiInput.addEventListener('input', () => {
+  aiInput.style.height = 'auto'
+  aiInput.style.height = `${Math.min(120, aiInput.scrollHeight)}px`
 })
 
 function formatBytes(bytes: number): string {
@@ -565,13 +876,30 @@ async function loadFiles(path?: string): Promise<void> {
       const row = document.createElement('button')
       row.type = 'button'
       row.className = 'file-row'
-      row.disabled = item.type !== 'directory'
+      row.draggable = true
+      row.title =
+        item.type === 'directory'
+          ? `打开或拖到终端：${item.path}`
+          : `拖到终端，在所在目录执行命令：${listing.path}`
       const name = document.createElement('span')
       name.textContent = `${item.type === 'directory' ? '▰' : '·'} ${item.name}`
       const size = document.createElement('span')
-      size.textContent = item.type === 'directory' ? '—' : formatBytes(item.size)
+      size.textContent = item.type === 'directory' ? '目录' : formatBytes(item.size)
       row.append(name, size)
       if (item.type === 'directory') row.addEventListener('click', () => void loadFiles(item.path))
+      row.addEventListener('dragstart', (event) => {
+        const targetDirectory = item.type === 'directory' ? item.path : listing.path
+        draggedDirectory = targetDirectory
+        row.classList.add('is-dragging')
+        event.dataTransfer?.setData('application/x-unixbridge-directory', targetDirectory)
+        event.dataTransfer?.setData('text/plain', targetDirectory)
+        if (event.dataTransfer) event.dataTransfer.effectAllowed = 'copy'
+      })
+      row.addEventListener('dragend', () => {
+        draggedDirectory = undefined
+        row.classList.remove('is-dragging')
+        container.classList.remove('is-directory-drop-target')
+      })
       fileList.append(row)
     }
   } catch (error) {
@@ -585,15 +913,79 @@ filesUpButton.addEventListener('click', () => {
 })
 filesRefreshButton.addEventListener('click', () => void loadFiles(currentFilePath))
 
-const removeDataListener = window.unixbridge.onData((data) => terminal.write(data))
-const removeExitListener = window.unixbridge.onExit((exitCode) => {
-  status.textContent = `会话已退出 (${exitCode})`
-  status.dataset.state = 'stopped'
-  sessionPlatform.textContent = `已退出 · Code ${exitCode}`
-  terminal.write(`\r\n\x1b[33m[unixbridge] 终端已退出，退出码 ${exitCode}\x1b[0m\r\n`)
+function quoteDirectory(path: string, platform: NodeJS.Platform | null): string {
+  if (platform === 'win32') return `'${path.replaceAll("'", "''")}'`
+  return `'${path.replaceAll("'", "'\\''")}'`
+}
+
+function changeTerminalDirectory(path: string): void {
+  const session = getActiveSession()
+  if (!session || !path) return
+  const command =
+    session.platform === 'win32'
+      ? `Set-Location -LiteralPath ${quoteDirectory(path, session.platform)}`
+      : `cd -- ${quoteDirectory(path, session.platform)}`
+  recordCommand(command)
+  window.unixbridge.write(session.id, `${command}\r`)
+  session.inputBuffer = ''
+  workspaceSubtitle.textContent = path
+  void loadFiles(path)
+  terminal.focus()
+}
+
+let draggedDirectory: string | undefined
+
+function isTerminalDropTarget(target: EventTarget | null): boolean {
+  return target instanceof Node && container.contains(target)
+}
+
+document.addEventListener('dragover', (event) => {
+  if (!draggedDirectory || !isTerminalDropTarget(event.target)) {
+    container.classList.remove('is-directory-drop-target')
+    return
+  }
+  event.preventDefault()
+  container.classList.add('is-directory-drop-target')
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
+}, true)
+
+document.addEventListener('drop', (event) => {
+  const path =
+    event.dataTransfer?.getData('application/x-unixbridge-directory') || draggedDirectory
+  if (!path || !isTerminalDropTarget(event.target)) return
+  event.preventDefault()
+  event.stopPropagation()
+  container.classList.remove('is-directory-drop-target')
+  draggedDirectory = undefined
+  changeTerminalDirectory(path)
+}, true)
+
+const removeDataListener = window.unixbridge.onData((sessionId, data) => {
+  const session = uiSessions.get(sessionId)
+  if (!session) return
+  session.output = `${session.output}${data}`.slice(-1_000_000)
+  if (sessionId === activeSessionId) terminal.write(data)
+})
+const removeExitListener = window.unixbridge.onExit((sessionId, exitCode) => {
+  const session = uiSessions.get(sessionId)
+  if (!session) return
+  const message = `\r\n\x1b[33m[unixbridge] 终端已退出，退出码 ${exitCode}\x1b[0m\r\n`
+  session.statusText = `会话已退出 (${exitCode})`
+  session.statusState = 'stopped'
+  session.platformLabel = `已退出 · Code ${exitCode}`
+  session.output = `${session.output}${message}`.slice(-1_000_000)
+  if (sessionId === activeSessionId) terminal.write(message)
+  renderSessionList()
+  syncActiveSessionUi()
 })
 
-let terminalInputBuffer = ''
+function recordCommand(command: string): void {
+  const normalized = command.trim()
+  if (!normalized) return
+  if (commandHistory[commandHistory.length - 1] !== normalized) commandHistory.push(normalized)
+  if (commandHistory.length > 200) commandHistory.splice(0, commandHistory.length - 200)
+  localStorage.setItem('unixbridge:command-history', JSON.stringify(commandHistory))
+}
 
 async function showWorkspaceContext(command: string): Promise<void> {
   try {
@@ -613,18 +1005,24 @@ async function showWorkspaceContext(command: string): Promise<void> {
 }
 
 terminal.onData((data) => {
-  window.unixbridge.write(data)
-  if (data.includes('\r')) {
-    const command = terminalInputBuffer.trim()
-    terminalInputBuffer = ''
-    if (command) void showWorkspaceContext(command)
-    return
+  const session = getActiveSession()
+  if (!session) return
+  window.unixbridge.write(session.id, data)
+  if (data.startsWith('\u001b')) return
+  for (const character of data) {
+    if (character === '\r' || character === '\n') {
+      const command = session.inputBuffer.trim()
+      session.inputBuffer = ''
+      if (command) {
+        recordCommand(command)
+        void showWorkspaceContext(command)
+      }
+    } else if (character === '\u007f') {
+      session.inputBuffer = session.inputBuffer.slice(0, -1)
+    } else if (character >= ' ') {
+      session.inputBuffer += character
+    }
   }
-  if (data === '\u007f') {
-    terminalInputBuffer = terminalInputBuffer.slice(0, -1)
-    return
-  }
-  if (!data.startsWith('\u001b') && !data.includes('\n')) terminalInputBuffer += data
 })
 
 let resizeFrame = 0
@@ -633,8 +1031,8 @@ const resizeObserver = new ResizeObserver(() => {
   resizeFrame = requestAnimationFrame(() => {
     if (container.clientWidth === 0 || container.clientHeight === 0) return
     try {
-      fitAddon.fit()
-      window.unixbridge.resize(terminal.cols, terminal.rows)
+    fitAddon.fit()
+      resizeActiveTerminal()
     } catch {
       // The terminal can be temporarily hidden while filtering command history.
     }
@@ -642,44 +1040,102 @@ const resizeObserver = new ResizeObserver(() => {
 })
 resizeObserver.observe(container)
 
-function setConnectionState(platform: NodeJS.Platform, pid: number): void {
+function setConnectionState(session: UiSession, platform: NodeJS.Platform, pid: number): void {
   const isWindows = platform === 'win32'
+  session.platform = platform
   const label = isWindows ? 'PowerShell · ConPTY' : '开发 shell · 非 ConPTY'
-  status.textContent = `${label} · PID ${pid}`
-  status.dataset.state = 'running'
-  sessionPlatform.textContent = `${isWindows ? 'PowerShell' : 'Local shell'} · PID ${pid}`
+  session.statusText = `${label} · PID ${pid}`
+  session.statusState = 'running'
+  session.platformLabel = `${isWindows ? 'PowerShell' : 'Local shell'} · PID ${pid}`
+  renderSessionList()
+  if (session.id === activeSessionId) syncActiveSessionUi()
 }
 
-async function startSession(clear = false): Promise<void> {
-  status.textContent = '正在启动终端…'
-  status.dataset.state = ''
-
-  if (clear) {
-    terminal.reset()
-    commandSearch.value = ''
-    filterCommands('')
+async function startSession(): Promise<void> {
+  sessionSequence += 1
+  const sessionId =
+    window.crypto.randomUUID?.() ??
+    `${Date.now()}-${Math.random().toString(36).slice(2)}-${sessionSequence}`
+  const session: UiSession = {
+    id: sessionId,
+    name: sessionSequence === 1 ? appearance.sessionName : `终端 ${sessionSequence}`,
+    color: appearance.sessionColor,
+    platform: null,
+    platformLabel: '正在连接…',
+    statusText: '正在启动终端…',
+    statusState: '',
+    output: '',
+    inputBuffer: ''
   }
+  uiSessions.set(sessionId, session)
+  activeSessionId = sessionId
+  terminal.reset()
+  commandSearch.value = ''
+  filterCommands('')
+  setSessionEditorOpen(false)
+  renderSessionList()
+  syncActiveSessionUi()
 
   try {
     fitAddon.fit()
-    const { platform, pid } = await window.unixbridge.start(terminal.cols, terminal.rows)
-    setConnectionState(platform, pid)
+    const { platform, pid } = await window.unixbridge.start(
+      sessionId,
+      terminal.cols,
+      terminal.rows
+    )
+    setConnectionState(session, platform, pid)
     terminal.focus()
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error)
-    status.textContent = '启动失败'
-    status.dataset.state = 'stopped'
-    sessionPlatform.textContent = '连接失败'
-    terminal.write(`\x1b[31m[unixbridge] ${message}\x1b[0m\r\n`)
+    const output = `\x1b[31m[unixbridge] ${message}\x1b[0m\r\n`
+    session.statusText = '启动失败'
+    session.statusState = 'stopped'
+    session.platformLabel = '连接失败'
+    session.output = output
+    renderSessionList()
+    if (session.id === activeSessionId) {
+      syncActiveSessionUi()
+      terminal.write(output)
+    }
   }
 }
 
 function filterCommands(rawQuery: string): void {
   const query = rawQuery.trim().toLocaleLowerCase()
-  const matches = !query || appearance.sessionName.toLocaleLowerCase().includes(query)
+  commandSearchResults.replaceChildren()
+  if (!query) {
+    commandSearchResults.hidden = true
+    return
+  }
 
-  terminalBlock.hidden = !matches
-  emptySearch.hidden = !query || matches
+  const matches = [...new Set([...commandHistory].reverse())]
+    .filter((command) => command.toLocaleLowerCase().includes(query))
+    .slice(0, 12)
+  commandSearchResults.hidden = false
+  if (matches.length === 0) {
+    const empty = document.createElement('span')
+    empty.className = 'search-result-empty'
+    empty.textContent = '没有匹配的历史命令'
+    commandSearchResults.append(empty)
+    return
+  }
+
+  for (const command of matches) {
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.textContent = command
+    button.title = '点击填入终端'
+    button.addEventListener('click', () => {
+      commandSearch.value = ''
+      commandSearchResults.hidden = true
+      const session = getActiveSession()
+      if (!session) return
+      session.inputBuffer = command
+      window.unixbridge.write(session.id, command)
+      terminal.focus()
+    })
+    commandSearchResults.append(button)
+  }
 }
 
 commandSearch.addEventListener('input', () => filterCommands(commandSearch.value))
@@ -690,8 +1146,10 @@ commandSearch.addEventListener('keydown', (event) => {
   terminal.focus()
 })
 
-element<HTMLElement>('#new-session').addEventListener('click', () => void startSession(true))
+element<HTMLElement>('#new-session').addEventListener('click', () => void startSession())
 element<HTMLElement>('#clear-terminal').addEventListener('click', () => {
+  const session = getActiveSession()
+  if (session) session.output = ''
   terminal.clear()
   terminal.focus()
 })
@@ -703,34 +1161,45 @@ topSettingsButton.addEventListener('click', (event) => {
   event.stopPropagation()
   setSettingsOpen(settingsPopover.hidden, 'top')
 })
+closeSettingsButton.addEventListener('click', () => setSettingsOpen(false))
 settingsPopover.addEventListener('click', (event) => event.stopPropagation())
-editSessionButton.addEventListener('click', (event) => {
-  event.stopPropagation()
-  setSessionEditorOpen(sessionEditor.hidden)
-})
+settingsResizer.addEventListener('click', (event) => event.stopPropagation())
 sessionEditor.addEventListener('click', (event) => event.stopPropagation())
 sessionNameInput.addEventListener('input', () => {
-  appearance.sessionName = sessionNameInput.value.trim() || '未命名会话'
+  const session = getActiveSession()
+  if (!session) return
+  session.name = sessionNameInput.value.trim() || '未命名会话'
+  appearance.sessionName = session.name
   saveAndApplyAppearance()
 })
 sessionNameInput.addEventListener('blur', () => {
   if (sessionNameInput.value.trim()) return
-  appearance.sessionName = '本地终端'
+  const session = getActiveSession()
+  if (!session) return
+  session.name = '本地终端'
+  appearance.sessionName = session.name
   saveAndApplyAppearance()
 })
 for (const button of document.querySelectorAll<HTMLButtonElement>('.color-options [data-color]')) {
   button.addEventListener('click', () => {
-    appearance.sessionColor = button.dataset.color ?? defaultSettings.sessionColor
+    const session = getActiveSession()
+    if (!session) return
+    session.color = button.dataset.color ?? defaultSettings.sessionColor
+    appearance.sessionColor = session.color
     saveAndApplyAppearance()
   })
 }
 document.addEventListener('click', () => {
+  if (settingsResizeClickPending) return
   setSettingsOpen(false)
   setSessionEditorOpen(false)
 })
 element<HTMLElement>('#sidebar-toggle').addEventListener('click', () => {
   document.body.classList.toggle('sidebar-collapsed')
-  requestAnimationFrame(() => fitAddon.fit())
+  requestAnimationFrame(() => {
+    fitAddon.fit()
+    resizeActiveTerminal()
+  })
 })
 element<HTMLElement>('#mobile-menu').addEventListener('click', () => {
   document.body.classList.toggle('sidebar-open')

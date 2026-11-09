@@ -4,7 +4,12 @@ import { join } from 'node:path'
 import * as pty from 'node-pty'
 import { registerWorkspaceIpc } from './workspace-ipc'
 
-const sessions = new Map<number, pty.IPty>()
+interface PtySession {
+  ownerId: number
+  terminal: pty.IPty
+}
+
+const sessions = new Map<string, PtySession>()
 
 function isTrustedSender(event: IpcMainEvent | IpcMainInvokeEvent): boolean {
   const window = BrowserWindow.fromWebContents(event.sender)
@@ -53,49 +58,68 @@ function spawnShell(cols: number, rows: number): pty.IPty {
   throw new Error(`无法启动 PowerShell: ${String(lastError)}`)
 }
 
-function disposeSession(webContentsId: number): void {
-  const session = sessions.get(webContentsId)
+function disposeSession(sessionId: string): void {
+  const session = sessions.get(sessionId)
   if (!session) return
-  sessions.delete(webContentsId)
+  sessions.delete(sessionId)
   try {
-    session.kill()
+    session.terminal.kill()
   } catch {
     // PTY may already have exited.
   }
 }
 
+function disposeOwnerSessions(ownerId: number): void {
+  for (const [sessionId, session] of sessions) {
+    if (session.ownerId === ownerId) disposeSession(sessionId)
+  }
+}
+
 function registerPtyIpc(): void {
-  ipcMain.handle('pty:start', (event, size: { cols: number; rows: number }) => {
+  ipcMain.handle(
+    'pty:start',
+    (event, request: { sessionId: string; cols: number; rows: number }) => {
     if (!isTrustedSender(event)) throw new Error('拒绝不受信任的 PTY 请求')
-    disposeSession(event.sender.id)
+      const sessionId = String(request.sessionId ?? '')
+      if (!/^[a-zA-Z0-9-]{8,80}$/.test(sessionId)) throw new Error('无效的终端会话标识')
+      if (
+        [...sessions.values()].filter((session) => session.ownerId === event.sender.id).length >= 20
+      ) {
+        throw new Error('最多同时打开 20 个终端会话')
+      }
+      disposeSession(sessionId)
 
-    const cols = Math.max(2, Math.floor(size.cols))
-    const rows = Math.max(1, Math.floor(size.rows))
-    const session = spawnShell(cols, rows)
-    sessions.set(event.sender.id, session)
+      const cols = Math.max(2, Math.floor(request.cols))
+      const rows = Math.max(1, Math.floor(request.rows))
+      const terminal = spawnShell(cols, rows)
+      sessions.set(sessionId, { ownerId: event.sender.id, terminal })
 
-    session.onData((data) => {
-      if (!event.sender.isDestroyed()) event.sender.send('pty:data', data)
-    })
-    session.onExit(({ exitCode }) => {
-      sessions.delete(event.sender.id)
-      if (!event.sender.isDestroyed()) event.sender.send('pty:exit', exitCode)
-    })
+      terminal.onData((data) => {
+        if (!event.sender.isDestroyed()) event.sender.send('pty:data', { sessionId, data })
+      })
+      terminal.onExit(({ exitCode }) => {
+        if (sessions.get(sessionId)?.terminal === terminal) sessions.delete(sessionId)
+        if (!event.sender.isDestroyed()) event.sender.send('pty:exit', { sessionId, exitCode })
+      })
 
-    return { platform: process.platform, pid: session.pid }
+      return { sessionId, platform: process.platform, pid: terminal.pid }
+    }
+  )
+
+  ipcMain.on('pty:write', (event, request: { sessionId: string; data: string }) => {
+    if (!isTrustedSender(event) || typeof request?.data !== 'string') return
+    const session = sessions.get(request.sessionId)
+    if (session?.ownerId === event.sender.id) session.terminal.write(request.data)
   })
 
-  ipcMain.on('pty:write', (event, data: string) => {
-    if (!isTrustedSender(event) || typeof data !== 'string') return
-    sessions.get(event.sender.id)?.write(data)
-  })
-
-  ipcMain.on('pty:resize', (event, size: { cols: number; rows: number }) => {
+  ipcMain.on('pty:resize', (event, request: { sessionId: string; cols: number; rows: number }) => {
     if (!isTrustedSender(event)) return
-    if (!Number.isFinite(size.cols) || !Number.isFinite(size.rows)) return
-    sessions.get(event.sender.id)?.resize(
-      Math.max(2, Math.floor(size.cols)),
-      Math.max(1, Math.floor(size.rows))
+    if (!Number.isFinite(request?.cols) || !Number.isFinite(request?.rows)) return
+    const session = sessions.get(request.sessionId)
+    if (session?.ownerId !== event.sender.id) return
+    session.terminal.resize(
+      Math.max(2, Math.floor(request.cols)),
+      Math.max(1, Math.floor(request.rows))
     )
   })
 }
@@ -116,7 +140,8 @@ function createWindow(): void {
     }
   })
 
-  window.on('closed', () => disposeSession(window.webContents.id))
+  const webContentsId = window.webContents.id
+  window.on('closed', () => disposeOwnerSessions(webContentsId))
 
   if (process.env.ELECTRON_RENDERER_URL) {
     void window.loadURL(process.env.ELECTRON_RENDERER_URL)
@@ -135,6 +160,6 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => {
-  for (const id of sessions.keys()) disposeSession(id)
+  for (const sessionId of sessions.keys()) disposeSession(sessionId)
   if (process.platform !== 'darwin') app.quit()
 })
