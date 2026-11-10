@@ -1549,47 +1549,39 @@ body[data-theme="dark"] .welcome-icon {
   white-space: pre;
 }
 
-.semantic-header-row {
-  display: block;
-  margin: 0;
-  padding: 0;
-  color: var(--text);
-  font-weight: 400;
-  font-variant-ligatures: none;
-  line-height: 1.35;
-  white-space: pre;
+.semantic-notes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 8px 2px;
 }
 
 .semantic-header-cell {
-  display: inline-block;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
   margin: 0;
-  padding: 0;
-  overflow: visible;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  font-weight: 400;
-  line-height: inherit;
-  text-align: left;
-  white-space: pre;
-  vertical-align: top;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel-raised);
+  color: var(--text);
+  font: 12px/1.3 var(--ui-font-family), "PingFang SC", sans-serif;
+  white-space: nowrap;
   cursor: pointer;
 }
 
-.semantic-header-glyph {
-  display: inline-block;
-  margin: 0;
-  padding: 0;
-  overflow: visible;
-  line-height: inherit;
-  white-space: pre;
-  vertical-align: top;
+.semantic-header-cell strong {
+  font-weight: 650;
+}
+
+.semantic-header-cell span {
+  color: var(--muted);
 }
 
 .semantic-header-cell.is-active {
-  text-decoration: underline;
-  text-underline-offset: 2px;
+  border-color: var(--accent);
+  text-decoration: none;
 }
 
 .semantic-inline-note,
@@ -3005,6 +2997,57 @@ button.context-chip.is-open {
 .command-block.is-active .command-block-time {
   background: color-mix(in srgb, var(--success) 16%, transparent);
   color: var(--success);
+}
+
+.command-column-notes {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+}
+
+.command-column-toggle {
+  height: 22px;
+  margin: 0;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  font: 11px/20px var(--ui-font-family), "PingFang SC", sans-serif;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.command-column-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 100%;
+  margin: 0;
+  color: var(--subtle);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.command-column-body[hidden] {
+  display: none;
+}
+
+.command-column-body p {
+  margin: 0;
+}
+
+.command-column-body strong {
+  color: var(--text);
+  font-weight: 650;
+}
+
+.command-column-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 12px;
 }
 
 .command-block-output {

@@ -6,12 +6,6 @@ import { formatChangeChip, isSafeBranchName, shellQuote } from '../core/workspac
 import type { GitDetails, NodeRuntime, StoredGroup } from '../preload'
 import { classifyFile, fileKindLabel, fileKindMark } from './file-icons'
 import { suggestCommands, type CommandSuggestion } from '../core/completion/commands'
-import {
-  displayWidth,
-  outputIncludesHeader,
-  renderSemanticTable,
-  type SemanticTableRender
-} from '../core/output/semantic-table'
 import { translate } from '../core/translator'
 import { parseSshTarget, type SshTarget } from '../core/ssh/target'
 import { parseCommandLine } from '../core/parser'
@@ -97,9 +91,6 @@ const filesRefreshButton = element<HTMLButtonElement>('#files-refresh')
 const toggleAiButton = element<HTMLButtonElement>('#toggle-ai')
 const closeAiButton = element<HTMLButtonElement>('#close-ai')
 const terminalContext = element<HTMLElement>('#terminal-context')
-const semanticBlock = element<HTMLElement>('#semantic-block')
-const semanticHeader = element<HTMLElement>('#semantic-header')
-const semanticLegend = element<HTMLElement>('#semantic-legend')
 const previewBlock = element<HTMLElement>('#preview-block')
 const previewTitle = element<HTMLElement>('#preview-title')
 const previewBody = element<HTMLElement>('#preview-body')
@@ -108,9 +99,6 @@ const sshTargetInput = element<HTMLInputElement>('#ssh-target')
 const directoryBrowser = element<HTMLElement>('#directory-browser')
 const directoryBrowserPath = element<HTMLElement>('#directory-browser-path')
 const directoryBrowserList = element<HTMLElement>('#directory-browser-list')
-const semanticDetails = element<HTMLElement>('#semantic-details')
-const semanticInlineNote = element<HTMLElement>('#semantic-inline-note')
-const semanticToggle = element<HTMLButtonElement>('#semantic-toggle')
 const contextRuntime = element<HTMLElement>('#context-runtime')
 const contextDirectory = element<HTMLElement>('#context-directory')
 const contextBranch = element<HTMLElement>('#context-branch')
@@ -1253,8 +1241,6 @@ function insertTerminalText(text: string): void {
   terminal.focus()
 }
 
-let lastSemanticRender: SemanticTableRender | null = null
-
 function showDirectoryChip(directory: string): void {
   const parts = directory.split(/[\\/]/).filter(Boolean)
   contextDirectory.textContent = parts.length > 0 ? `…/${parts.slice(-2).join('/')}` : directory
@@ -1319,17 +1305,6 @@ async function openDirectoryBrowser(path?: string): Promise<void> {
   } catch (error) {
     directoryBrowserList.textContent = error instanceof Error ? error.message : String(error)
   }
-}
-
-function clearSemanticEntries(): void {
-  lastSemanticRender = null
-  semanticColumns = []
-  openHeaderKey = ''
-  semanticHeader.className = 'semantic-header'
-  semanticHeader.replaceChildren()
-  semanticLegend.hidden = true
-  semanticInlineNote.hidden = true
-  semanticInlineNote.textContent = ''
 }
 
 function parseCsv(text: string): string[][] {
@@ -1598,191 +1573,89 @@ function parseStructuredRequest(
   return { command, args, expanded }
 }
 
-function terminalCellWidth(): number {
-  const measured = (
-    terminal as unknown as {
-      _core?: { _renderService?: { dimensions?: { css?: { cell?: { width?: number } } } } }
-    }
-  )._core?._renderService?.dimensions?.css?.cell?.width
-  if (typeof measured === 'number' && measured >= 4 && measured <= 32) return measured
-  let widest = 0
-  for (const canvas of container.querySelectorAll('canvas')) {
-    if (canvas instanceof HTMLCanvasElement) widest = Math.max(widest, canvas.width)
-  }
-  if (widest > 0 && terminal.cols > 0) {
-    const width = widest / window.devicePixelRatio / terminal.cols
-    if (width >= 4 && width <= 32) return width
-  }
-  return 0
-}
-
-function terminalTextOrigin(): number {
-  const screen = container.querySelector('.xterm-screen')
-  if (!(screen instanceof HTMLElement)) return 0
-  return screen.getBoundingClientRect().left - semanticHeader.getBoundingClientRect().left
-}
-
-let semanticColumns: ColumnDef[] = []
-let openHeaderKey = ''
-
-function matchedFontSize(size: number, family: string, cell: number): string {
-  if (cell < 4) return `${size}px`
-  const probe = document.createElement('span')
-  probe.textContent = '0000000000'
-  probe.style.cssText = `position:absolute;visibility:hidden;white-space:pre;font:400 ${size}px ${family}`
-  document.body.append(probe)
-  const advance = probe.getBoundingClientRect().width / 10
-  probe.remove()
-  if (advance > 0 && Math.abs(advance - cell) / cell > 0.03) return `${(size * cell) / advance}px`
-  return `${size}px`
-}
-
-function appendCells(parent: HTMLElement, value: string, cell: number): void {
-  if (cell < 4) {
-    parent.append(document.createTextNode(value))
-    return
-  }
-  for (const character of value) {
-    const glyph = document.createElement('span')
-    glyph.className = 'semantic-header-glyph'
-    glyph.textContent = character
-    glyph.style.width = `${displayWidth(character) * cell}px`
-    parent.append(glyph)
-  }
-}
-
-function paintHeaderRow(rendered: SemanticTableRender): HTMLElement {
-  const row = document.createElement('div')
-  row.className = 'semantic-header-row'
-  const family = terminal.options.fontFamily || 'monospace'
-  const size = terminal.options.fontSize || 13
-  const cell = terminalCellWidth()
-  row.style.fontFamily = family
-  row.style.fontSize = matchedFontSize(size, family, cell)
-  const origin = Math.max(0, terminalTextOrigin())
-  row.style.marginLeft = `${origin}px`
-  semanticInlineNote.style.marginLeft = `${origin}px`
-  let consumed = 0
-  for (const segment of rendered.headerSegments) {
-    const gap = segment.start - consumed
-    if (gap > 0) appendCells(row, ' '.repeat(gap), cell)
-    const button = document.createElement('button')
-    button.type = 'button'
-    button.className = 'semantic-header-cell'
-    button.dataset.key = segment.key
-    button.classList.toggle('is-active', segment.key === openHeaderKey)
-    button.setAttribute('aria-expanded', String(segment.key === openHeaderKey))
-    appendCells(button, segment.header, cell)
-    button.addEventListener('click', (event) => {
-      event.stopPropagation()
-      toggleHeaderNote(segment.key)
-    })
-    row.append(button)
-    consumed = segment.start + displayWidth(segment.header)
-  }
-  return row
-}
-
-function showHeaderNote(key: string): void {
-  const column = semanticColumns.find((item) => item.key === key)
-  openHeaderKey = column ? key : ''
-  for (const button of semanticHeader.querySelectorAll<HTMLButtonElement>('.semantic-header-cell')) {
-    const active = button.dataset.key === openHeaderKey
-    button.classList.toggle('is-active', active)
-    button.setAttribute('aria-expanded', String(active))
-  }
-  if (!column) {
-    semanticInlineNote.hidden = true
-    semanticInlineNote.textContent = ''
-    return
-  }
-  semanticInlineNote.hidden = false
-  semanticInlineNote.textContent = `${column.header} (${column.key}) ${column.detailed ?? column.description}`
-}
-
-function toggleHeaderNote(key: string): void {
-  const wasOpen = !semanticInlineNote.hidden
-  if (openHeaderKey === key) showHeaderNote('')
-  else {
-    semanticDetails.hidden = true
-    semanticToggle.setAttribute('aria-expanded', 'false')
-    showHeaderNote(key)
-  }
-  if (wasOpen !== !semanticInlineNote.hidden) fitTerminalAfterHeaderNote()
-}
-
-function fitTerminalAfterHeaderNote(): void {
+function fitTerminalAfterNotes(): void {
   requestAnimationFrame(() => {
     fitAddon.fit()
     resizeActiveTerminal()
   })
 }
 
-function renderSemanticColumns(rendered: SemanticTableRender): void {
-  lastSemanticRender = rendered
-  semanticHeader.className = 'semantic-columns'
-  semanticHeader.replaceChildren(paintHeaderRow(rendered))
-  semanticLegend.hidden = true
-  showHeaderNote(openHeaderKey)
+function setColumnNotesOpen(root: HTMLElement, open: boolean): void {
+  const body = root.querySelector('.command-column-body')
+  const toggle = root.querySelector('.command-column-toggle')
+  if (body instanceof HTMLElement) body.hidden = !open
+  if (toggle instanceof HTMLButtonElement) {
+    toggle.setAttribute('aria-expanded', String(open))
+    toggle.textContent = open ? '收起列说明' : '列说明'
+  }
 }
 
-function renderSemanticMetadata(
-  columns: ColumnDef[],
-  rows: Array<Record<string, string | number>>,
-  expanded: boolean,
-  rawOutput: string
-): void {
-  if (outputIncludesHeader(rawOutput, columns) && !expanded) {
-    clearSemanticEntries()
-    semanticBlock.hidden = true
-    return
-  }
-  semanticColumns = columns
-  if (!columns.some((column) => column.key === openHeaderKey)) openHeaderKey = ''
-  const rendered = renderSemanticTable(columns, rows, expanded, rawOutput)
-  renderSemanticColumns(rendered)
-  semanticDetails.replaceChildren()
+function attachColumnNotes(block: HTMLElement, columns: ColumnDef[], expanded: boolean): void {
+  block.querySelector('.command-column-notes')?.remove()
+  const root = document.createElement('div')
+  root.className = 'command-column-notes'
+  const toggle = document.createElement('button')
+  toggle.type = 'button'
+  toggle.className = 'command-column-toggle'
+  const body = document.createElement('div')
+  body.className = 'command-column-body'
   for (const column of columns) {
     const item = document.createElement('p')
     const title = document.createElement('strong')
-    title.textContent = `${column.header} (${column.key})`
-    item.append(title, document.createTextNode(` ${column.detailed ?? column.description}`))
-    item.dataset.type = column.type ?? 'default'
-    semanticDetails.append(item)
+    title.textContent = `${column.header} (${column.key}) ${column.description}`
+    item.append(title, document.createTextNode(`。${column.detailed ?? ''}`))
+    body.append(item)
   }
-  semanticDetails.hidden = !expanded
-  semanticToggle.setAttribute('aria-expanded', String(expanded))
-  semanticBlock.hidden = false
-  const meta = getActiveSession()?.runningBlock?.querySelector('.command-block-meta') ?? null
-  if (meta) meta.append(semanticBlock)
-  relayoutTerminal()
+  toggle.addEventListener('click', (event) => {
+    event.stopPropagation()
+    setColumnNotesOpen(root, toggle.getAttribute('aria-expanded') !== 'true')
+    fitTerminalAfterNotes()
+  })
+  root.append(toggle, body)
+  block.querySelector('header')?.after(root)
+  setColumnNotesOpen(root, expanded)
+}
+
+function attachColumnError(block: HTMLElement, message: string): void {
+  block.querySelector('.command-column-notes')?.remove()
+  const note = document.createElement('p')
+  note.className = 'command-column-error'
+  note.textContent = message
+  block.querySelector('header')?.after(note)
+}
+
+function latestColumnNotes(): HTMLElement | null {
+  const entries = getActiveSession()?.commandEntries ?? []
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const notes = entries[index]?.querySelector('.command-column-notes')
+    if (notes instanceof HTMLElement) return notes
+  }
+  return null
+}
+
+function toggleLatestColumnNotes(): void {
+  const notes = latestColumnNotes()
+  if (!notes) return
+  const toggle = notes.querySelector('.command-column-toggle')
+  const open = !(toggle instanceof HTMLButtonElement && toggle.getAttribute('aria-expanded') === 'true')
+  setColumnNotesOpen(notes, open)
+  fitTerminalAfterNotes()
 }
 
 function relayoutTerminal(): void {
   requestAnimationFrame(() => {
     fitAddon.fit()
     resizeActiveTerminal()
-    if (lastSemanticRender) renderSemanticColumns(lastSemanticRender)
     terminal.scrollToBottom()
   })
 }
-
-function toggleSemanticDetails(): void {
-  if (semanticBlock.hidden) return
-  const expanded = semanticDetails.hidden
-  semanticDetails.hidden = !expanded
-  semanticToggle.setAttribute('aria-expanded', String(expanded))
-  if (expanded) showHeaderNote('')
-  relayoutTerminal()
-}
-
-semanticToggle.addEventListener('click', () => toggleSemanticDetails())
 
 async function showStructuredMetadata(
   session: UiSession,
   rawInput: string,
   request: StructuredRequest
 ): Promise<void> {
+  const block = session.runningBlock
   recordCommand(rawInput)
   void showWorkspaceContext(
     request.args.length > 0 ? `${request.command} ${request.args.join(' ')}` : request.command,
@@ -1794,22 +1667,13 @@ async function showStructuredMetadata(
       request.args,
       session.currentDirectory ?? currentFilePath
     )
-    if (session.id !== activeSessionId) return
-    if (result.columns.length === 0) {
-      clearSemanticEntries()
-      semanticBlock.hidden = true
-      return
-    }
-    renderSemanticMetadata(result.columns, result.rows, request.expanded, result.rawOutput)
+    if (!block || result.columns.length === 0) return
+    attachColumnNotes(block, result.columns, request.expanded)
+    if (session.id === activeSessionId) relayoutTerminal()
   } catch (error) {
-    if (session.id !== activeSessionId) return
-    clearSemanticEntries()
-    semanticBlock.hidden = false
-    semanticHeader.className = 'semantic-header'
-    semanticHeader.textContent = request.command
-    semanticLegend.hidden = false
-    semanticLegend.textContent = error instanceof Error ? error.message : String(error)
-    semanticDetails.hidden = true
+    if (!block) return
+    attachColumnError(block, error instanceof Error ? error.message : String(error))
+    if (session.id === activeSessionId) relayoutTerminal()
   }
 }
 
@@ -1843,8 +1707,6 @@ async function showWorkspaceContext(command: string, relayout = true): Promise<v
     const becameVisible = terminalContext.hidden
     terminalContext.hidden = false
     if (isClearCommand(command)) {
-      clearSemanticEntries()
-      semanticBlock.hidden = true
       requestAnimationFrame(() => {
         fitAddon.fit()
         resizeActiveTerminal()
@@ -2085,10 +1947,6 @@ function showCommandRisk(sessionId: string, result: PtyWriteResult): void {
 }
 
 async function submitTerminalLine(session: UiSession, data: string): Promise<void> {
-  if (openHeaderKey) {
-    showHeaderNote('')
-    fitTerminalAfterHeaderNote()
-  }
   const submittedCommand = session.inputBuffer.trim()
   const structured = submittedCommand
     ? parseStructuredRequest(submittedCommand, session.platform)
@@ -2138,8 +1996,8 @@ function acceptCompletion(command: string): void {
 terminal.onData((data) => {
   const session = getActiveSession()
   if (!session) return
-  if (data === '\u0007' && !semanticBlock.hidden) {
-    toggleSemanticDetails()
+  if (data === '\u0007' && latestColumnNotes()) {
+    toggleLatestColumnNotes()
     return
   }
   if (session.inputMode === 'prompt' && (data === '\u001b[A' || data === '\u001b[B') && completionItems.length > 0) {
@@ -2180,6 +2038,8 @@ terminal.onData((data) => {
         recordCommand(result.line)
         beginCommandBlock(session, result.line)
         void showWorkspaceContext(result.line)
+        const structured = parseStructuredRequest(result.line, session.platform)
+        if (structured) void showStructuredMetadata(session, result.line, structured)
       })
       return
     }
@@ -2219,7 +2079,6 @@ const resizeObserver = new ResizeObserver(() => {
     try {
       fitAddon.fit()
       resizeActiveTerminal()
-      if (lastSemanticRender) renderSemanticColumns(lastSemanticRender)
     } catch {
       // The terminal can be temporarily hidden while filtering command history.
     }
@@ -2705,8 +2564,6 @@ newSessionMenu.addEventListener('click', (event) => event.stopPropagation())
 element<HTMLElement>('#clear-terminal').addEventListener('click', () => {
   const session = getActiveSession()
   if (!session) return
-  clearSemanticEntries()
-  semanticBlock.hidden = true
   window.unixbridge.write(session.id, 'clear\r')
   terminal.focus()
 })
@@ -2756,10 +2613,6 @@ document.addEventListener('click', () => {
   closeDirectoryBrowser()
   closeContextPopover()
   closeNewSessionMenu()
-  if (openHeaderKey) {
-    showHeaderNote('')
-    fitTerminalAfterHeaderNote()
-  }
   if (editingGroupId) {
     editingGroupId = ''
     renderSessionList()
@@ -2810,7 +2663,6 @@ function setSidebarCollapsed(collapsed: boolean): void {
   requestAnimationFrame(() => {
     fitAddon.fit()
     resizeActiveTerminal()
-    if (lastSemanticRender) renderSemanticColumns(lastSemanticRender)
   })
 }
 
