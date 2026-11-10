@@ -1,24 +1,7 @@
-import { parseSshTarget, type SshTarget } from '../ssh/target'
+import type { StoredGroup, StoredSession, StoredWorkspace } from '../../shared/types'
+import { parseSshTarget } from '../ssh/target'
 
-export interface StoredSession {
-  id: string
-  name: string
-  color: string
-  kind: 'local' | 'ssh'
-  ssh?: SshTarget
-  groupId?: string
-}
-
-export interface StoredGroup {
-  id: string
-  name: string
-  color: string
-}
-
-export interface StoredWorkspace {
-  sessions: StoredSession[]
-  groups: StoredGroup[]
-}
+export type { StoredGroup, StoredSession, StoredWorkspace }
 
 const ID_PATTERN = /^[a-zA-Z0-9-]{8,80}$/
 const COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/

@@ -1,17 +1,45 @@
-import { readdir } from 'node:fs/promises'
+import { readdir, realpath } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import path from 'node:path'
 
-export function resolveHomePath(requested?: string): string {
-  const home = path.resolve(homedir())
+function isInsideRoot(root: string, target: string): boolean {
+  const relation = path.relative(root, target)
+  return relation === '' || (!relation.startsWith('..') && !path.isAbsolute(relation))
+}
+
+async function resolveExistingRealPath(target: string): Promise<string> {
+  const pending: string[] = []
+  let current = target
+  while (true) {
+    try {
+      const real = await realpath(current)
+      return pending.reduceRight((directory, name) => path.resolve(directory, name), real)
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error
+      const parent = path.dirname(current)
+      if (parent === current) throw error
+      pending.push(path.basename(current))
+      current = parent
+    }
+  }
+}
+
+export async function resolveHomePath(requested?: string, root = homedir()): Promise<string> {
+  if (requested?.includes('\0')) throw new Error('路径不能包含 NUL 字符')
+  const home = await realpath(root)
   const target = path.resolve(
     requested && path.isAbsolute(requested) ? requested : path.join(home, requested ?? '')
   )
-  const relation = path.relative(home, target)
-  if (relation.startsWith('..') || path.isAbsolute(relation)) {
+  if (!isInsideRoot(home, target)) throw new Error('文件浏览仅允许访问当前用户目录')
+  let realTarget: string
+  try {
+    realTarget = await resolveExistingRealPath(target)
+  } catch {
     throw new Error('文件浏览仅允许访问当前用户目录')
   }
-  return target
+  if (!isInsideRoot(home, realTarget)) throw new Error('文件浏览仅允许访问当前用户目录')
+  return realTarget
 }
 
 export interface NormalizePathOptions {

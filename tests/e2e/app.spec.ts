@@ -62,6 +62,13 @@ test('opens the Warp-like workspace and runs a command', async () => {
     await window.keyboard.type('echo __UNIX_STYLE_OK__')
     await window.keyboard.press('Enter')
     await expect(window.locator('.xterm-rows')).toContainText('__UNIX_STYLE_OK__')
+    await window.locator('#terminal').click()
+    await window.keyboard.type('rm -rf __unixbridge_blocked__')
+    await window.keyboard.press('Enter')
+    await expect(window.locator('#command-risk')).toBeVisible()
+    await expect(window.locator('#command-risk-text')).toContainText('删除')
+    await window.locator('#command-risk-cancel').click()
+    await expect(window.locator('#command-risk')).toBeHidden()
 
     await window.locator('#new-session').click()
     await window.locator('#create-terminal').click()

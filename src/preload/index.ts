@@ -1,22 +1,13 @@
 import { contextBridge, ipcRenderer } from 'electron'
+import type { AiConfig, AiConfigStatus, ChatMessage, PtyWriteResult, SshTarget, StoredWorkspace } from '../shared/types'
+
+export type { AiConfig, AiConfigStatus, ChatMessage, PtyWriteResult, SshTarget, StoredGroup, StoredSession, StoredWorkspace } from '../shared/types'
 
 export interface PtyStartResult {
   sessionId: string
   platform: NodeJS.Platform
   pid: number
   shell: string
-}
-
-export interface AiConfig {
-  provider: 'local' | 'api'
-  endpoint: string
-  model: string
-  apiKey?: string
-}
-
-export interface ChatMessage {
-  role: 'system' | 'user' | 'assistant'
-  content: string
 }
 
 export interface SystemMetrics {
@@ -55,32 +46,6 @@ export interface FilePreview {
   text?: string
   url?: string
   message?: string
-}
-
-export interface SshTarget {
-  user: string
-  host: string
-  port: number
-}
-
-export interface StoredSession {
-  id: string
-  name: string
-  color: string
-  kind: 'local' | 'ssh'
-  ssh?: SshTarget
-  groupId?: string
-}
-
-export interface StoredGroup {
-  id: string
-  name: string
-  color: string
-}
-
-export interface StoredWorkspace {
-  sessions: StoredSession[]
-  groups: StoredGroup[]
 }
 
 export interface WorkspaceContext {
@@ -131,13 +96,16 @@ export interface StructuredCommandResult {
 
 export interface UnixbridgeApi {
   start: (sessionId: string, cols: number, rows: number, ssh?: SshTarget) => Promise<PtyStartResult>
-  write: (sessionId: string, data: string) => void
+  write: (sessionId: string, data: string) => Promise<PtyWriteResult>
   resize: (sessionId: string, cols: number, rows: number) => void
   dispose: (sessionId: string) => void
   onData: (listener: (sessionId: string, data: string) => void) => () => void
   onExit: (listener: (sessionId: string, exitCode: number) => void) => () => void
-  configureAi: (config: AiConfig) => Promise<{ configured: boolean }>
-  loadAi: () => Promise<AiConfig | null>
+  onRisk: (listener: (sessionId: string, result: PtyWriteResult) => void) => () => void
+  approveCommand: (sessionId: string, token: string) => Promise<{ approved: boolean }>
+  cancelCommand: (sessionId: string, token: string) => Promise<{ cancelled: boolean }>
+  configureAi: (config: AiConfig) => Promise<AiConfigStatus & { configured: true }>
+  loadAi: () => Promise<AiConfigStatus | null>
   chat: (messages: ChatMessage[]) => Promise<{ content: string }>
   chatStream: (messages: ChatMessage[], onChunk: (chunk: string) => void) => Promise<void>
   metrics: () => Promise<SystemMetrics>
@@ -158,7 +126,13 @@ export interface UnixbridgeApi {
 const api: UnixbridgeApi = {
   start: (sessionId, cols, rows, ssh) =>
     ipcRenderer.invoke('pty:start', { sessionId, cols, rows, ...(ssh ? { ssh } : {}) }),
-  write: (sessionId, data) => ipcRenderer.send('pty:write', { sessionId, data }),
+  write: (sessionId, data) => {
+    if (data.includes('\r') || data.includes('\n')) {
+      return ipcRenderer.invoke('pty:submit', { sessionId, data })
+    }
+    ipcRenderer.send('pty:write', { sessionId, data })
+    return Promise.resolve({ action: 'none', ruleId: '', reason: '', line: '' })
+  },
   resize: (sessionId, cols, rows) =>
     ipcRenderer.send('pty:resize', { sessionId, cols, rows }),
   dispose: (sessionId) => ipcRenderer.send('pty:dispose', { sessionId }),
@@ -178,6 +152,16 @@ const api: UnixbridgeApi = {
     ipcRenderer.on('pty:exit', handler)
     return () => ipcRenderer.removeListener('pty:exit', handler)
   },
+  onRisk: (listener) => {
+    const handler = (
+      _event: Electron.IpcRendererEvent,
+      payload: { sessionId: string } & PtyWriteResult
+    ): void => listener(payload.sessionId, payload)
+    ipcRenderer.on('pty:risk', handler)
+    return () => ipcRenderer.removeListener('pty:risk', handler)
+  },
+  approveCommand: (sessionId, token) => ipcRenderer.invoke('pty:approve', { sessionId, token }),
+  cancelCommand: (sessionId, token) => ipcRenderer.invoke('pty:cancel', { sessionId, token }),
   configureAi: (config) => ipcRenderer.invoke('ai:configure', config),
   loadAi: () => ipcRenderer.invoke('ai:load'),
   chat: (messages) => ipcRenderer.invoke('ai:chat', messages),

@@ -1,30 +1,22 @@
 import { app, ipcMain, safeStorage, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron'
 import { execFile } from 'node:child_process'
-import { readFile, readdir, stat, writeFile } from 'node:fs/promises'
+import { readFile, readdir, stat } from 'node:fs/promises'
+import { realpath } from 'node:fs/promises'
 import { cpus, freemem, totalmem } from 'node:os'
 import { homedir } from 'node:os'
-import { basename, join, resolve } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { promisify } from 'node:util'
+import { normalizeAiEndpoint } from '../core/ai/endpoint'
 import { executeStructuredCommand } from '../core/commands'
+import { writeAtomic } from '../core/fs/atomic'
 import { resolveHomePath } from '../core/path'
 import { previewKind, previewUrl, type PreviewKind } from '../core/preview/kind'
 import { currentPlatform, resolveStructured } from '../core/structured'
 import { isSafeBranchName, parseGitStatus, summarizeNumstat } from '../core/workspace/git'
 import { sanitizeStoredWorkspace, type StoredGroup, type StoredSession } from '../core/workspace/stored'
+import type { AiConfig, AiConfigStatus, ChatMessage } from '../shared/types'
 
 const execFileAsync = promisify(execFile)
-
-interface AiConfig {
-  provider: 'local' | 'api'
-  endpoint: string
-  model: string
-  apiKey?: string
-}
-
-interface ChatMessage {
-  role: 'system' | 'user' | 'assistant'
-  content: string
-}
 
 interface CpuSnapshot {
   idle: number
@@ -39,16 +31,27 @@ function aiConfigFile(): string {
 }
 
 function sealSecret(value: string): string {
-  const buffer = safeStorage.isEncryptionAvailable()
-    ? safeStorage.encryptString(value)
-    : Buffer.from(value, 'utf8')
-  return buffer.toString('base64')
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error('当前环境无法加密保存密钥')
+  }
+  return safeStorage.encryptString(value).toString('base64')
 }
 
-function openSecret(value: string, sealed: boolean): string {
-  const buffer = Buffer.from(value, 'base64')
-  if (sealed && safeStorage.isEncryptionAvailable()) return safeStorage.decryptString(buffer)
-  return buffer.toString('utf8')
+function openSecret(value: string, sealed: boolean): string | undefined {
+  if (!sealed || !safeStorage.isEncryptionAvailable()) return undefined
+  return safeStorage.decryptString(Buffer.from(value, 'base64'))
+}
+
+function aiStatus(config: AiConfig): AiConfigStatus {
+  const encryptionAvailable = safeStorage.isEncryptionAvailable()
+  return {
+    provider: config.provider,
+    endpoint: config.endpoint,
+    model: config.model,
+    hasApiKey: Boolean(config.apiKey),
+    encryptionAvailable,
+    persisted: Boolean(config.apiKey) && encryptionAvailable
+  }
 }
 
 async function readPersistedAi(): Promise<AiConfig | null> {
@@ -61,7 +64,7 @@ async function readPersistedAi(): Promise<AiConfig | null> {
       sealed?: boolean
     }
     if (raw.provider !== 'local' && raw.provider !== 'api') return null
-    const endpoint = normalizeEndpoint(String(raw.endpoint ?? ''))
+    const endpoint = normalizeAiEndpoint(String(raw.endpoint ?? ''), raw.provider)
     const model = String(raw.model ?? '').trim()
     if (!model) return null
     const apiKey = raw.apiKey ? openSecret(raw.apiKey, raw.sealed === true) : undefined
@@ -72,27 +75,20 @@ async function readPersistedAi(): Promise<AiConfig | null> {
 }
 
 async function writePersistedAi(config: AiConfig): Promise<void> {
-  await writeFile(
+  const canSeal = Boolean(config.apiKey) && safeStorage.isEncryptionAvailable()
+  await writeAtomic(
     aiConfigFile(),
     JSON.stringify({
       provider: config.provider,
       endpoint: config.endpoint,
       model: config.model,
-      sealed: Boolean(config.apiKey) && safeStorage.isEncryptionAvailable(),
-      ...(config.apiKey ? { apiKey: sealSecret(config.apiKey) } : {})
+      sealed: canSeal,
+      ...(canSeal && config.apiKey ? { apiKey: sealSecret(config.apiKey) } : {})
     })
   )
 }
 const cpuSnapshots = new Map<number, CpuSnapshot>()
 
-function normalizeEndpoint(endpoint: string): string {
-  const url = new URL(endpoint)
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new Error('AI 服务地址只支持 HTTP 或 HTTPS')
-  }
-  const base = url.toString().replace(/\/$/, '')
-  return base.endsWith('/chat/completions') ? base : `${base}/chat/completions`
-}
 
 function readCpuSnapshot(): CpuSnapshot {
   return cpus().reduce(
@@ -106,6 +102,7 @@ function readCpuSnapshot(): CpuSnapshot {
   )
 }
 
+// cpuUsage is the delta since the previous sample for this window, not an absolute load.
 function cpuUsage(webContentsId: number): number {
   const current = readCpuSnapshot()
   const previous = cpuSnapshots.get(webContentsId)
@@ -160,6 +157,7 @@ async function nodeVersionLabel(): Promise<string> {
   }
 }
 
+// Looks only at the default nvm, fnm and volta install directories, plus the node currently on PATH.
 async function listNodeRuntimes(): Promise<Array<{ version: string; source: string; binDir: string; current: boolean }>> {
   const current = (await nodeVersionLabel()).replace(/^Node\s+v?/, '')
   const found: Array<{ version: string; source: string; binDir: string; current: boolean }> = []
@@ -208,13 +206,13 @@ export function registerWorkspaceIpc(
     persistedAi ??= await readPersistedAi()
     if (!persistedAi) return null
     aiConfigs.set(event.sender.id, { ...persistedAi })
-    return persistedAi
+    return aiStatus(persistedAi)
   })
 
   ipcMain.handle('ai:configure', async (event, config: AiConfig) => {
     if (!isTrustedSender(event)) throw new Error('拒绝不受信任的 AI 配置请求')
     if (!config || !['local', 'api'].includes(config.provider)) throw new Error('无效的 AI 模式')
-    const endpoint = normalizeEndpoint(String(config.endpoint ?? ''))
+    const endpoint = normalizeAiEndpoint(String(config.endpoint ?? ''), config.provider)
     const model = String(config.model ?? '').trim()
     if (!model) throw new Error('请填写 AI 模型名称')
     persistedAi ??= await readPersistedAi()
@@ -228,7 +226,7 @@ export function registerWorkspaceIpc(
     persistedAi = next
     aiConfigs.set(event.sender.id, next)
     await writePersistedAi(next)
-    return { configured: true }
+    return { configured: true as const, ...aiStatus(next) }
   })
 
   ipcMain.handle('ai:chat', async (event, messages: ChatMessage[]) => {
@@ -374,10 +372,16 @@ export function registerWorkspaceIpc(
 
   ipcMain.handle('files:list', async (event, requested?: string) => {
     if (!isTrustedSender(event)) throw new Error('拒绝不受信任的文件请求')
-    const directory = resolveHomePath(requested)
-    const directoryStat = await stat(directory)
-    if (!directoryStat.isDirectory()) throw new Error('目标不是目录')
-    const entries = await readdir(directory, { withFileTypes: true })
+    const directory = await resolveHomePath(requested)
+    let entries
+    try {
+      const directoryStat = await stat(directory)
+      if (!directoryStat.isDirectory()) throw new Error('目标不是目录')
+      entries = await readdir(directory, { withFileTypes: true })
+    } catch (error) {
+      if (error instanceof Error && error.message === '目标不是目录') throw error
+      throw new Error('无法读取该目录')
+    }
     const items = await Promise.all(
       entries.slice(0, 300).map(async (entry) => {
         const fullPath = join(directory, entry.name)
@@ -395,17 +399,17 @@ export function registerWorkspaceIpc(
       if (a.type !== b.type) return a.type === 'directory' ? -1 : 1
       return a.name.localeCompare(b.name)
     })
-    const home = resolve(homedir())
+    const home = await realpath(homedir())
     return {
       path: directory,
-      parent: directory === home ? null : resolve(directory, '..'),
+      parent: directory === home ? null : dirname(directory),
       items
     }
   })
 
   ipcMain.handle('files:preview', async (event, requested?: string) => {
     if (!isTrustedSender(event)) throw new Error('拒绝不受信任的文件请求')
-    const filePath = resolveHomePath(requested)
+    const filePath = await resolveHomePath(requested)
     const details = await stat(filePath)
     if (!details.isFile()) throw new Error('只能预览文件')
     const name = basename(filePath)
@@ -438,14 +442,14 @@ export function registerWorkspaceIpc(
       if (!resolveStructured(command, args, currentPlatform())) {
         throw new Error('不支持的结构化命令')
       }
-      const cwd = resolveHomePath(request?.cwd)
+      const cwd = await resolveHomePath(request?.cwd)
       return executeStructuredCommand(command, args, cwd)
     }
   )
 
   ipcMain.handle('workspace:context', async (event, directory?: string) => {
     if (!isTrustedSender(event)) throw new Error('拒绝不受信任的工作区请求')
-    const cwd = resolveHomePath(typeof directory === 'string' ? directory : undefined)
+    const cwd = await resolveHomePath(typeof directory === 'string' ? directory : undefined)
     const [runtime, branchResult, statusResult, diffResult] = await Promise.all([
       nodeVersionLabel(),
       gitOutput(cwd, ['branch', '--show-current']),
@@ -466,7 +470,7 @@ export function registerWorkspaceIpc(
 
   ipcMain.handle('workspace:git', async (event, directory?: string) => {
     if (!isTrustedSender(event)) throw new Error('拒绝不受信任的工作区请求')
-    const cwd = resolveHomePath(typeof directory === 'string' ? directory : undefined)
+    const cwd = await resolveHomePath(typeof directory === 'string' ? directory : undefined)
     const [branchResult, branchesResult, statusResult, diffResult] = await Promise.all([
       gitOutput(cwd, ['branch', '--show-current']),
       gitOutput(cwd, ['branch', '--format=%(refname:short)']),

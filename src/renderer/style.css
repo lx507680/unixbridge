@@ -2838,6 +2838,55 @@ button.context-chip.is-open {
   font-size: 11px;
 }
 
+.command-risk,
+.terminal-notice {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 6px 10px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.command-risk {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.command-risk[hidden],
+.terminal-notice[hidden] {
+  display: none;
+}
+
+.command-risk p,
+.terminal-notice {
+  margin: 0;
+}
+
+.terminal-notice {
+  color: var(--subtle);
+}
+
+.command-risk-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.command-risk-actions button {
+  min-height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--panel-raised);
+  color: var(--text);
+  cursor: pointer;
+}
+
 .terminal-column {
   position: relative;
 }

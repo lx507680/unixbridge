@@ -1,8 +1,6 @@
-export interface SshTarget {
-  user: string
-  host: string
-  port: number
-}
+import type { SshTarget } from '../../shared/types'
+
+export type { SshTarget }
 
 const TARGET =
   /^(?:(?<user>[A-Za-z0-9_][A-Za-z0-9._-]{0,31})@)?(?<host>[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?)(?::(?<port>\d{1,5}))?$/

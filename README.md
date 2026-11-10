@@ -11,32 +11,25 @@ Unix-semantics 命令层执行，并为管道和界面保留结构化结果。
 
 ## 项目状态
 
-当前版本：`0.1.0`，处于 M0 基础设施阶段。
+当前版本：`0.1.0`。这是一个可交互的 Electron 终端工作区，底层会话仍然是真实 shell
+（macOS/Linux 为登录 shell，Windows 为 PowerShell/ConPTY）。
 
-已完成：
+已接入：
 
-- Electron 主进程、隔离 preload 和最小安全 IPC。
-- xterm.js 全屏终端以及 node-pty 生命周期、输入输出和 resize。
-- Windows PowerShell/ConPTY 启动链路。
-- tokenizer、受限语法 AST parser 和解析诊断。
-- ShellState、OutputBlock、命令 registry 接口。
-- 支持 `-l -a -h -R` 的结构化 `ls` 实现草稿。
-- deny / confirm / warn / allow RiskPolicy。
-- Wave 风格可配置多面板工作区，可独立开关 AI、系统指标和文件浏览器。
-- 本地 OpenAI-compatible / API Key AI 接入；API Key 只保存在主进程内存。
-- NVIDIA GPU 使用率检测（不可用时明确降级为 CPU）和内存趋势展示。
-- 当前用户目录内的只读文件浏览器、布局预设与面板宽度设置。
-- `ls`、`ps`、`df` 通过正则适配器解析为结构化 rows；语义表头和图例渲染在独立的界面层，真实命令仍交给当前 Shell。
-- 23 个单元测试和 Electron 启动 e2e 烟测。
+- 多会话 PTY、会话分组、SSH 启动参数和本地会话恢复。
+- 提交到 PTY 的整行输入会先经过 parser、命令 registry、ShellState 和 RiskPolicy。
+  `deny` 会取消这一行，`confirm` 必须在界面确认后才会送出回车。普通命令仍由当前 shell 执行。
+- 文件浏览、预览和 `unixbridge://preview` 只解析当前用户目录；符号链接和 junction 会再做一次 realpath 校验。
+- AI 配置的 API Key 加密后保存在本机。界面只知道“是否已保存”，不会收到明文密钥。
+  系统无法加密时，密钥只留在本次运行的主进程内存中，并在界面提示。
+- API 模式拒绝把密钥发往本机或内网地址；本地模式仍可连接 loopback 模型服务。
+- 列说明、命令补全、工作区布局、文件预览和 Windows 命令翻译提示。
 
-尚未完成：
+安全边界：
 
-- 默认命令输入仍未接入白名单 Dispatcher。
-- 除 `ls` 外的 registry 命令目前只有 schema，尚无内置执行器。
-- Warp-like block UI、结构化 pipeline 和 fallback 尚未实现。
-
-> 安全提示：M0 的 PTY 是开发用原始 PowerShell 通道，尚未经过白名单 Dispatcher，
-> 不能视为安全执行环境。请勿在不可信环境中运行未知或高风险命令。
+- 这不是一个只执行白名单命令的隔离执行器。允许和仅警告的命令会进入真实 shell。
+- 方向键调用的 shell 历史不会被逐字复核，因为主进程看不到 Readline 改写后的那一行。
+- 预览协议仍可供当前页面里的图片和媒体使用。渲染不可信 HTML 会扩大影响面，文本预览必须保持纯文本。
 
 ## 核心目标
 
@@ -78,7 +71,7 @@ npm run package:win
 ```
 
 - `npm run dev`：启动 Electron 开发模式。
-- `npm test`：运行 parser、registry、`ls`、RiskPolicy 单元测试。
+- `npm test`：运行 parser、RiskPolicy、PTY 门禁、路径沙箱和命令语义单元测试。
 - `npm run e2e`：先构建，再运行 Electron 启动烟测。
 - `npm run package` / `npm run package:mac`：构建当前 Apple Silicon 开发机使用的
   macOS DMG；开发包未签名，首次打开时需要在系统设置中确认。
@@ -115,8 +108,8 @@ tests/
 - Registry：列出 MVP 白名单；当前只有 `ls` 绑定了内置执行器，其余是 M1/M2 schema。
 - `ls`：`-l -a -h -R`、基础 `*` / `?` glob、结构化 rows、文本渲染、目录 `/`
   后缀、错误列表和 exit code。
-- RiskPolicy：deny / confirm / warn / allow 决策及 audit record 类型。策略尚未接入 M0
-  原始 PTY。
+- RiskPolicy 已接在 PTY 提交路径上：`deny` 取消该行，`confirm` 需要界面确认，`warn` 会提示并继续交给当前 shell。
+- Registry 目前只有 `ls` 绑定了内置执行器。其余白名单命令仍由当前 shell 执行，registry 负责识别和审计。
 
 ## Unix / Windows 语义 TODO
 
@@ -137,7 +130,8 @@ tests/
 ### M1：白名单执行路径
 
 - [ ] 增加 Warp-like command editor，不把默认输入直接写入 PTY。
-- [ ] Dispatcher 串联 parser、registry、ShellState、RiskPolicy 和 OutputBlock。
+- [x] Dispatcher 在命令进入 PTY 前串联 parser、registry、ShellState 和 RiskPolicy。
+- [ ] 内置执行器目前只有 `ls`；允许的命令继续由当前 shell 执行。
 - [ ] 实现 `pwd/cd/cat/echo/clear/history/mkdir/which/env`，所有文件参数走 path 模块。
 - [ ] 实现 `echo hello > a.txt` 的程序内重定向，禁止 shell 字符串拼接。
 - [ ] command registry + cwd 文件补全，并在 `cd` 后更新 prompt。

@@ -47,13 +47,6 @@ function quoteAll(values: readonly string[]): string[] | undefined {
   return quoted
 }
 
-function withNotice(translated: string): { notice: string; shellLine: string } | undefined {
-  const notice = `[系统翻译]: 正在执行等效命令: ${translated}`
-  const literal = powershellLiteral(notice)
-  if (literal === undefined) return undefined
-  return { notice, shellLine: `Write-Output ${literal}; ${translated}` }
-}
-
 function translateLs(args: readonly string[]): string | undefined {
   let all = false
   let long = false
@@ -222,16 +215,14 @@ export class CommandTranslator {
             ? translateFind(parsed.ast.args)
             : undefined
     if (translated === undefined) return undefined
-    const announced = withNotice(translated)
-    if (announced === undefined) return undefined
     return {
       cmd,
       os: platform,
       original,
       translated,
       changed: translated !== original,
-      notice: announced.notice,
-      shellLine: announced.shellLine,
+      notice: `[系统翻译]: 正在执行等效命令: ${translated}`,
+      shellLine: translated,
       description
     }
   }

@@ -55,6 +55,18 @@ function hasCommand(context: RiskContext, name: string): boolean {
   return commandNodes(context.ast).some((command) => command.name.toLowerCase() === name)
 }
 
+function rawRecursiveForceRemove(rawInput: string): boolean {
+  if (!/(?:^|&&|\|\||;|\|)\s*rm\b/i.test(rawInput)) return false
+  const flags = rawInput.match(/(?:^|\s)-{1,2}[A-Za-z-]+/g)?.map((flag) => flag.trim().toLowerCase()) ?? []
+  const hasShort = (letter: string) =>
+    flags.some((flag) => flag === `-${letter}` || (flag.startsWith('-') && !flag.startsWith('--') && flag.includes(letter)))
+  return (
+    flags.some((flag) => flag === '-rf' || flag === '-fr') ||
+    (flags.includes('--recursive') && flags.includes('--force')) ||
+    (hasShort('r') && hasShort('f'))
+  )
+}
+
 function hasSystemPath(value: string): boolean {
   const normalized = value.replaceAll('/', '\\').toLowerCase()
   return (
@@ -114,9 +126,10 @@ export const defaultRiskRules: readonly RiskRule[] = [
     reason: 'rm 递归强制删除可能不可恢复。',
     irreversible: true,
     matches: (context) =>
+      rawRecursiveForceRemove(context.rawInput) ||
       commandNodes(context.ast).some(
         (command) =>
-          command.name === 'rm' &&
+          command.name.toLowerCase() === 'rm' &&
           (command.args.includes('-rf') ||
             command.args.includes('-fr') ||
             (command.args.includes('-r') && command.args.includes('-f')))

@@ -15,7 +15,7 @@ import { translate } from '../core/translator'
 import { parseSshTarget, type SshTarget } from '../core/ssh/target'
 import { parseCommandLine } from '../core/parser'
 import { canStructure, type StructuredPlatform } from '../core/structured'
-import type { ColumnDef } from '../preload'
+import type { ColumnDef, PtyWriteResult } from '../preload'
 import './style.css'
 
 function element<T extends Element>(selector: string): T {
@@ -27,6 +27,11 @@ function element<T extends Element>(selector: string): T {
 const terminalRoot = element<HTMLElement>('#terminal')
 const container = element<HTMLElement>('#terminal-screen')
 const commandComplete = element<HTMLElement>('#command-complete')
+const commandRisk = element<HTMLElement>('#command-risk')
+const commandRiskText = element<HTMLElement>('#command-risk-text')
+const commandRiskApprove = element<HTMLButtonElement>('#command-risk-approve')
+const commandRiskCancel = element<HTMLButtonElement>('#command-risk-cancel')
+const terminalNotice = element<HTMLElement>('#terminal-notice')
 const status = element<HTMLElement>('#session-status')
 const commandSearch = element<HTMLInputElement>('#command-search')
 const commandSearchResults = element<HTMLElement>('#command-search-results')
@@ -912,19 +917,43 @@ async function configureAi(showSuccess = true): Promise<void> {
   localStorage.setItem('unixbridge:ai-preferences', JSON.stringify(aiPreferences))
   aiConfigStatus.textContent = '正在连接…'
   try {
-    await window.unixbridge.configureAi({
+    const typedKey = aiApiKeyInput.value.trim()
+    const saved = await window.unixbridge.configureAi({
       ...aiPreferences,
-      apiKey: aiApiKeyInput.value.trim()
+      ...(aiApiKeyInput.dataset.dirty === 'true' || typedKey ? { apiKey: typedKey } : {})
     })
-    aiConfigStatus.textContent = showSuccess ? 'AI 配置已保存并可用' : 'AI 已就绪'
+    if (typedKey) {
+      aiApiKeyInput.value = ''
+      aiApiKeyInput.placeholder = saved.encryptionAvailable
+        ? '已加密保存，留空则保持不变'
+        : '本次运行有效，关闭后需要重新填写'
+      delete aiApiKeyInput.dataset.dirty
+    }
+    aiConfigStatus.textContent = aiStatusText(saved, showSuccess)
   } catch (error) {
     aiConfigStatus.textContent = error instanceof Error ? error.message : String(error)
     throw error
   }
 }
 
+function aiStatusText(
+  saved: { hasApiKey: boolean; encryptionAvailable: boolean; persisted: boolean },
+  showSuccess: boolean
+): string {
+  if (saved.hasApiKey && !saved.encryptionAvailable) {
+    return '当前环境无法加密密钥，它只留在本次运行的主进程内存中，关闭后需要重新填写'
+  }
+  if (showSuccess && saved.hasApiKey && saved.persisted) {
+    return 'AI 配置已保存。密钥已加密保存在本机，界面不会回显。'
+  }
+  return showSuccess ? 'AI 配置已保存并可用' : 'AI 已就绪'
+}
+
 saveAiConfigButton.addEventListener('click', () => {
   void configureAi().catch(() => undefined)
+})
+aiApiKeyInput.addEventListener('input', () => {
+  aiApiKeyInput.dataset.dirty = 'true'
 })
 
 function appendInlineMarkdown(target: HTMLElement, content: string): void {
@@ -1466,6 +1495,36 @@ const removeExitListener = window.unixbridge.onExit((sessionId, exitCode) => {
   renderSessionList()
   syncActiveSessionUi()
 })
+const removeRiskListener = window.unixbridge.onRisk((sessionId, result) => {
+  if (sessionId !== activeSessionId) return
+  showCommandRisk(sessionId, result)
+})
+commandRiskApprove.addEventListener('click', () => {
+  const sessionId = commandRisk.dataset.session ?? ''
+  const token = commandRisk.dataset.token ?? ''
+  const line = commandRisk.dataset.line ?? ''
+  void window.unixbridge.approveCommand(sessionId, token).then((result) => {
+    if (!result.approved) return
+    const session = uiSessions.get(sessionId)
+    if (session && line) {
+      session.inputBuffer = ''
+      recordCommand(line)
+      void showWorkspaceContext(line)
+    }
+    hideCommandRisk()
+    terminal.focus()
+  })
+})
+commandRiskCancel.addEventListener('click', () => {
+  const sessionId = commandRisk.dataset.session ?? ''
+  const token = commandRisk.dataset.token ?? ''
+  const session = uiSessions.get(sessionId)
+  void window.unixbridge.cancelCommand(sessionId, token).then(() => {
+    if (session) session.inputBuffer = ''
+    hideCommandRisk()
+    terminal.focus()
+  })
+})
 
 function recordCommand(command: string): void {
   const normalized = command.trim()
@@ -1820,12 +1879,81 @@ function toggleInputAssist(kind: 'commandCompletion' | 'historySuggestions'): vo
 commandCompletionButton.addEventListener('click', () => toggleInputAssist('commandCompletion'))
 historySuggestionsButton.addEventListener('click', () => toggleInputAssist('historySuggestions'))
 
+function showTerminalNotice(message: string): void {
+  terminalNotice.hidden = message.length === 0
+  terminalNotice.textContent = message
+}
+
+function hideCommandRisk(): void {
+  commandRisk.hidden = true
+  delete commandRisk.dataset.session
+  delete commandRisk.dataset.token
+  delete commandRisk.dataset.line
+  commandRiskText.textContent = ''
+  commandRiskApprove.hidden = false
+}
+
+function showCommandRisk(sessionId: string, result: PtyWriteResult): void {
+  if (result.action === 'warn') {
+    showTerminalNotice(result.reason)
+    return
+  }
+  if (result.action !== 'confirm' && result.action !== 'deny') {
+    hideCommandRisk()
+    return
+  }
+  commandRisk.hidden = false
+  commandRisk.dataset.session = sessionId
+  if (result.token) commandRisk.dataset.token = result.token
+  else delete commandRisk.dataset.token
+  commandRisk.dataset.line = result.line
+  commandRiskText.textContent = result.action === 'deny' ? `已拒绝：${result.reason}` : result.reason
+  commandRiskApprove.hidden = result.action !== 'confirm'
+}
+
+async function submitTerminalLine(session: UiSession, data: string): Promise<void> {
+  if (openHeaderKey) {
+    showHeaderNote('')
+    fitTerminalAfterHeaderNote()
+  }
+  const submittedCommand = session.inputBuffer.trim()
+  const structured = submittedCommand
+    ? parseStructuredRequest(submittedCommand, session.platform)
+    : undefined
+  let outbound = data
+  if (structured?.expanded) outbound = `\u007f${data}`
+  const translated =
+    session.platform === 'win32' && submittedCommand ? translate(submittedCommand, 'windows') : undefined
+  if (translated?.changed) {
+    outbound = `${'\u007f'.repeat(session.inputBuffer.length)}${translated.shellLine}\r`
+    showTerminalNotice(translated.notice)
+  }
+  const result = await window.unixbridge.write(session.id, outbound)
+  if (result.action === 'deny') {
+    session.inputBuffer = ''
+    hideCompletions()
+    return
+  }
+  if (result.action === 'confirm') {
+    hideCompletions()
+    return
+  }
+  if (!translated?.changed && result.action !== 'warn') showTerminalNotice('')
+  session.inputBuffer = ''
+  if (submittedCommand) {
+    recordCommand(submittedCommand)
+    void showWorkspaceContext(submittedCommand)
+  }
+  hideCompletions()
+  if (structured) void showStructuredMetadata(session, submittedCommand, structured)
+}
+
 function acceptCompletion(command: string): void {
   const session = getActiveSession()
   if (!session) return
   const backspaces = '\u007f'.repeat(session.inputBuffer.length)
   session.inputBuffer = command
-  window.unixbridge.write(session.id, `${backspaces}${command}`)
+  void window.unixbridge.write(session.id, `${backspaces}${command}`)
   hideCompletions()
   terminal.focus()
 }
@@ -1858,46 +1986,20 @@ terminal.onData((data) => {
     }
   }
 
-  let outbound = data
-  let submittedCommand = ''
-  let structured: StructuredRequest | undefined
   if (data === '\r' || data === '\n') {
-    if (openHeaderKey) {
-      showHeaderNote('')
-      fitTerminalAfterHeaderNote()
-    }
-    submittedCommand = session.inputBuffer.trim()
-    structured = submittedCommand
-      ? parseStructuredRequest(submittedCommand, session.platform)
-      : undefined
-    if (structured?.expanded) outbound = `\u007f${data}`
-    const translated =
-      session.platform === 'win32' && submittedCommand ? translate(submittedCommand, 'windows') : undefined
-    if (translated?.changed) {
-      outbound = `${'\u007f'.repeat(session.inputBuffer.length)}${translated.shellLine}\r`
-    }
+    void submitTerminalLine(session, data)
+    return
   }
-  window.unixbridge.write(session.id, outbound)
+  hideCommandRisk()
+  void window.unixbridge.write(session.id, data)
   if (data.startsWith('\u001b')) return
   for (const character of data) {
-    if (character === '\r' || character === '\n') {
-      const command = session.inputBuffer.trim()
-      session.inputBuffer = ''
-      if (command) {
-        recordCommand(command)
-        void showWorkspaceContext(command)
-      }
-    } else if (character === '\u007f') {
-      session.inputBuffer = session.inputBuffer.slice(0, -1)
-    } else if (character === '\u0003') {
-      session.inputBuffer = ''
-    } else if (character >= ' ') {
-      session.inputBuffer += character
-    }
+    if (character === '\u007f') session.inputBuffer = session.inputBuffer.slice(0, -1)
+    else if (character === '\u0003') session.inputBuffer = ''
+    else if (character >= ' ') session.inputBuffer += character
   }
-  if (data === '\r' || data === '\n' || data === '\u0003') hideCompletions()
+  if (data === '\u0003') hideCompletions()
   else if (!data.startsWith('\u001b')) refreshCompletions(session.inputBuffer)
-  if (structured) void showStructuredMetadata(session, submittedCommand, structured)
 })
 
 let resizeFrame = 0
@@ -2519,6 +2621,7 @@ window.addEventListener('keydown', (event) => {
 window.addEventListener('beforeunload', () => {
   removeDataListener()
   removeExitListener()
+  removeRiskListener()
   resizeObserver.disconnect()
   window.clearInterval(metricsTimer)
 })
@@ -2529,10 +2632,16 @@ void window.unixbridge.loadAi().then((saved) => {
   aiPreferences.provider = saved.provider
   aiPreferences.endpoint = saved.endpoint
   aiPreferences.model = saved.model
-  if (saved.apiKey) aiApiKeyInput.value = saved.apiKey
   localStorage.setItem('unixbridge:ai-preferences', JSON.stringify(aiPreferences))
   syncAiSettings()
-  aiConfigStatus.textContent = saved.apiKey ? '已恢复本机保存的 API Key' : 'AI 已就绪'
+  if (saved.hasApiKey && !saved.encryptionAvailable) {
+    aiConfigStatus.textContent = '当前环境无法加密密钥，关闭后需要重新填写'
+  } else if (saved.hasApiKey) {
+    aiApiKeyInput.placeholder = '已加密保存，留空则保持不变'
+    aiConfigStatus.textContent = '已恢复本机加密保存的 API Key，界面不会回显'
+  } else {
+    aiConfigStatus.textContent = 'AI 已就绪'
+  }
 }).catch((error: unknown) => {
   aiConfigStatus.textContent = error instanceof Error ? error.message : String(error)
 })

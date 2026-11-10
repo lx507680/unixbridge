@@ -6,7 +6,7 @@ describe('command translator', () => {
     const ls = commandTranslator.translate('ls -la', 'windows')
     expect(ls?.translated).toBe('Get-ChildItem -Force | Format-List')
     expect(ls?.notice).toBe('[系统翻译]: 正在执行等效命令: Get-ChildItem -Force | Format-List')
-    expect(ls?.shellLine.startsWith('Write-Output ')).toBe(true)
+    expect(ls?.shellLine).toBe('Get-ChildItem -Force | Format-List')
     expect(ls?.changed).toBe(true)
 
     expect(commandTranslator.translate('grep -n foo src', 'win32')?.translated).toBe(

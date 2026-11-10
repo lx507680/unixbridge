@@ -145,7 +145,7 @@
             <label>模型<input id="ai-model" type="text" value="qwen2.5-coder:7b" /></label>
             <label id="ai-key-label" hidden>API Key<input id="ai-api-key" type="password" autocomplete="off" /></label>
             <button id="save-ai-config" class="settings-primary" type="button">保存 AI 配置</button>
-            <small id="ai-config-status">密钥加密保存在本机，重新打开后仍然可用</small>
+            <small id="ai-config-status">密钥加密保存在本机，重新打开后不会回显。当前环境无法加密时，密钥只留在本次运行的内存中。</small>
           </div>
           <div class="settings-group">
             <span class="settings-label">主题</span>
@@ -253,6 +253,14 @@
                 <div id="preview-body" class="preview-body"></div>
               </section>
               <section id="terminal" class="terminal-block" aria-label="终端输出">
+                <div id="command-risk" class="command-risk" hidden>
+                  <p id="command-risk-text"></p>
+                  <div class="command-risk-actions">
+                    <button id="command-risk-approve" type="button">仍然执行</button>
+                    <button id="command-risk-cancel" type="button">取消</button>
+                  </div>
+                </div>
+                <p id="terminal-notice" class="terminal-notice" hidden></p>
                 <section id="semantic-block" class="semantic-block" hidden>
                   <div class="semantic-metadata">
                     <div class="semantic-line">
