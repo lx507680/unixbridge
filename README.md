@@ -74,9 +74,21 @@ npm run package:win
 - `npm test`：运行 parser、RiskPolicy、PTY 门禁、路径沙箱和命令语义单元测试。
 - `npm run e2e`：先构建，再运行 Electron 启动烟测。
 - `npm run package` / `npm run package:mac`：构建当前 Apple Silicon 开发机使用的
-  macOS DMG；开发包未签名，首次打开时需要在系统设置中确认。
-- `npm run package:win`：构建 Windows x64 NSIS `.exe`。依赖包内的 Windows
-  `node-pty` 预编译模块，发布前仍应在 Windows 10/11 实机验证 ConPTY。
+  macOS DMG。完整命令：
+
+  ```bash
+  npm run build && electron-builder --mac dmg --config.electronDist=node_modules/electron/dist
+  ```
+
+  产物：`dist/unixbridge-0.1.0-arm64.dmg`。开发包未签名，首次打开时需要在系统设置中确认。
+- `npm run package:win`：构建 Windows x64 NSIS `.exe`。完整命令：
+
+  ```bash
+  npm run build && electron-builder --win nsis --x64 --config.npmRebuild=false
+  ```
+
+  产物：`dist/unixbridge-0.1.0-setup-x64.exe`。依赖包内的 Windows `node-pty`
+  预编译模块，发布前仍应在 Windows 10/11 实机验证 ConPTY。安装包未签名，首次打开会遇到 SmartScreen 提示。
 
 如果 Vite 报告 `node:fs/promises` 缺少导出，请先执行 `node -v`。项目要求 Node.js
 20 或更高版本，推荐 Node.js 22 LTS。
