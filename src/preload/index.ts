@@ -95,13 +95,15 @@ export interface StructuredCommandResult {
 }
 
 export interface UnixbridgeApi {
-  start: (sessionId: string, cols: number, rows: number, ssh?: SshTarget) => Promise<PtyStartResult>
+  start: (sessionId: string, cols: number, rows: number, ssh?: SshTarget, loadProfile?: boolean) => Promise<PtyStartResult>
   write: (sessionId: string, data: string) => Promise<PtyWriteResult>
   resize: (sessionId: string, cols: number, rows: number) => void
   dispose: (sessionId: string) => void
   onData: (listener: (sessionId: string, data: string) => void) => () => void
   onExit: (listener: (sessionId: string, exitCode: number) => void) => () => void
   onRisk: (listener: (sessionId: string, result: PtyWriteResult) => void) => () => void
+  onMode: (listener: (sessionId: string, mode: 'prompt' | 'running' | 'application', output?: string) => void) => () => void
+  recentAudit: () => Promise<Array<{ timestamp: string; input: string; outcome: string; decision: { action: string; reason: string; ruleId: string } }>>
   approveCommand: (sessionId: string, token: string) => Promise<{ approved: boolean }>
   cancelCommand: (sessionId: string, token: string) => Promise<{ cancelled: boolean }>
   configureAi: (config: AiConfig) => Promise<AiConfigStatus & { configured: true }>
@@ -124,8 +126,14 @@ export interface UnixbridgeApi {
 }
 
 const api: UnixbridgeApi = {
-  start: (sessionId, cols, rows, ssh) =>
-    ipcRenderer.invoke('pty:start', { sessionId, cols, rows, ...(ssh ? { ssh } : {}) }),
+  start: (sessionId, cols, rows, ssh, loadProfile = true) =>
+    ipcRenderer.invoke('pty:start', {
+      sessionId,
+      cols,
+      rows,
+      loadProfile,
+      ...(ssh ? { ssh } : {})
+    }),
   write: (sessionId, data) => {
     if (data.includes('\r') || data.includes('\n')) {
       return ipcRenderer.invoke('pty:submit', { sessionId, data })
@@ -160,6 +168,15 @@ const api: UnixbridgeApi = {
     ipcRenderer.on('pty:risk', handler)
     return () => ipcRenderer.removeListener('pty:risk', handler)
   },
+  onMode: (listener) => {
+    const handler = (
+      _event: Electron.IpcRendererEvent,
+      payload: { sessionId: string; mode: 'prompt' | 'running' | 'application'; output?: string }
+    ): void => listener(payload.sessionId, payload.mode, payload.output)
+    ipcRenderer.on('pty:mode', handler)
+    return () => ipcRenderer.removeListener('pty:mode', handler)
+  },
+  recentAudit: () => ipcRenderer.invoke('audit:recent'),
   approveCommand: (sessionId, token) => ipcRenderer.invoke('pty:approve', { sessionId, token }),
   cancelCommand: (sessionId, token) => ipcRenderer.invoke('pty:cancel', { sessionId, token }),
   configureAi: (config) => ipcRenderer.invoke('ai:configure', config),

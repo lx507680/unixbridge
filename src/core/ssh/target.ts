@@ -20,6 +20,39 @@ export function sshSessionName(sessionId: string): string {
   return `ub${safe}`
 }
 
+export function sshRemoteCommand(sessionId: string): string {
+  const name = sshSessionName(sessionId)
+  return `shell="\${SHELL:-/bin/sh}"
+base=$(basename "$shell")
+integrate_zsh() {
+  dir=$(mktemp -d)
+  printf '%s\\n' 'if [[ -f "$HOME/.zshenv" ]]; then source "$HOME/.zshenv"; fi' > "$dir/.zshenv"
+  printf '%s\\n' 'if [[ -f "$HOME/.zprofile" ]]; then source "$HOME/.zprofile"; fi' > "$dir/.zprofile"
+  printf '%s\\n' 'if [[ -f "$HOME/.zlogin" ]]; then source "$HOME/.zlogin"; fi' > "$dir/.zlogin"
+  printf '%s\\n' 'export ZDOTDIR="$HOME"' 'if [[ -f "$HOME/.zshrc" ]]; then source "$HOME/.zshrc"; fi' '__unixbridge_prompt() { print -Pn "\\e]133;A\\a" }' '__unixbridge_exec() { print -Pn "\\e]133;C\\a" }' 'precmd_functions+=(__unixbridge_prompt)' 'preexec_functions+=(__unixbridge_exec)' > "$dir/.zshrc"
+  export ZDOTDIR="$dir"
+}
+integrate_bash() {
+  rc=$(mktemp)
+  printf '%s\\n' 'if [[ -f "$HOME/.bashrc" ]]; then source "$HOME/.bashrc"; fi' '__unixbridge_prompt() { printf "\\e]133;A\\a"; }' 'PS0="\\e]133;C\\a"' 'PROMPT_COMMAND="__unixbridge_prompt\${PROMPT_COMMAND:+;\$PROMPT_COMMAND}"' > "$rc"
+}
+if command -v tmux >/dev/null 2>&1 && tmux has-session -t ${name} 2>/dev/null; then
+  exec tmux new-session -A -s ${name}
+fi
+case "$base" in
+  zsh) integrate_zsh ;;
+  bash) integrate_bash ;;
+esac
+if command -v tmux >/dev/null 2>&1; then
+  if [ "$base" = bash ]; then exec tmux new-session -s ${name} bash --rcfile "$rc" -i; fi
+  if [ "$base" = zsh ]; then exec tmux new-session -s ${name} env ZDOTDIR="$ZDOTDIR" "$shell" -l; fi
+  exec tmux new-session -s ${name}
+fi
+if [ "$base" = bash ]; then exec bash --rcfile "$rc" -i; fi
+exec "$shell" -l
+`
+}
+
 export function sshLaunchArguments(target: SshTarget, sessionId: string): string[] {
   const parsed = parseSshTarget(
     `${target.user ? `${target.user}@` : ''}${target.host}${target.port === 22 ? '' : `:${target.port}`}`
@@ -27,9 +60,8 @@ export function sshLaunchArguments(target: SshTarget, sessionId: string): string
   if (!parsed || parsed.host !== target.host || parsed.port !== target.port || parsed.user !== target.user) {
     throw new Error('SSH 目标无效')
   }
-  const name = sshSessionName(sessionId)
   const destination = parsed.user ? `${parsed.user}@${parsed.host}` : parsed.host
-  const remote = `if command -v tmux >/dev/null 2>&1; then exec tmux new-session -A -s ${name}; else exec "\${SHELL:-/bin/sh}" -l; fi`
+  const remote = sshRemoteCommand(sessionId)
   return [
     '-p',
     String(parsed.port),

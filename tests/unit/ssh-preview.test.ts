@@ -37,8 +37,10 @@ describe('持久 SSH', () => {
       '123e4567-e89b-12d3-a456-426614174000'
     )
     expect(args).toContain('luoxian@example.com')
-    expect(args.at(-1)).toBe(
-      `if command -v tmux >/dev/null 2>&1; then exec tmux new-session -A -s ${sshSessionName('123e4567-e89b-12d3-a456-426614174000')}; else exec "\${SHELL:-/bin/sh}" -l; fi`
-    )
+    const remote = args.at(-1) ?? ''
+    expect(remote).toContain(`tmux new-session -A -s ${sshSessionName('123e4567-e89b-12d3-a456-426614174000')}`)
+    expect(remote).toContain('\\e]133;A')
+    expect(remote).not.toContain('example.com')
+    expect(remote).not.toContain('luoxian')
   })
 })

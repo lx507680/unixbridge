@@ -58,8 +58,9 @@ export function previewMime(name: string): string {
   return mime[extension] ?? 'application/octet-stream'
 }
 
-export function previewUrl(filePath: string): string {
+export function previewUrl(filePath: string, token = ''): string {
   const url = new URL('unixbridge://preview/file')
   url.searchParams.set('path', filePath)
+  if (token) url.searchParams.set('token', token)
   return url.toString()
 }

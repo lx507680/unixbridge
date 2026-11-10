@@ -135,6 +135,15 @@
             </div>
             <small id="input-assist-status">输入时显示常用命令补全和历史命令。</small>
           </div>
+          <div class="settings-group">
+            <span class="settings-label">终端行为</span>
+            <div class="assist-toggles">
+              <button id="toggle-powershell-profile" type="button" aria-pressed="true">PowerShell 配置</button>
+              <button id="show-audit" type="button">风险记录</button>
+            </div>
+            <small id="shell-behavior-status">Windows 启动时读取 PowerShell 配置。新的终端会话才会用到这项。</small>
+            <pre id="audit-log" class="audit-log" hidden></pre>
+          </div>
           <div class="settings-group ai-settings">
             <span class="settings-label">AI 服务</span>
             <div class="segmented-control" data-setting="ai-provider">
@@ -261,6 +270,12 @@
                   </div>
                 </div>
                 <p id="terminal-notice" class="terminal-notice" hidden></p>
+                <form id="terminal-search" class="terminal-search" hidden>
+                  <input id="terminal-search-input" type="search" placeholder="搜索终端输出" aria-label="搜索终端输出" />
+                  <button type="submit">下一个</button>
+                  <button id="terminal-search-prev" type="button">上一个</button>
+                </form>
+                <div id="command-blocks" class="command-blocks" hidden></div>
                 <section id="semantic-block" class="semantic-block" hidden>
                   <div class="semantic-metadata">
                     <div class="semantic-line">

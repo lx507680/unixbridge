@@ -2887,6 +2887,149 @@ button.context-chip.is-open {
   cursor: pointer;
 }
 
+.terminal-search,
+.command-blocks {
+  flex: 0 0 auto;
+}
+
+.terminal-search {
+  display: flex;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.terminal-search[hidden] {
+  display: none;
+}
+
+.terminal-search input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.terminal-search button,
+.command-block-actions button {
+  flex: 0 0 auto;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--panel-raised);
+  color: var(--text);
+  font: 12px/22px var(--ui-font-family), "PingFang SC", sans-serif;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.terminal-search button:hover,
+.command-block-actions button:hover {
+  border-color: var(--accent);
+}
+
+.command-blocks {
+  display: grid;
+  max-height: 28%;
+  overflow: auto;
+}
+
+.command-archive-bar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 6px 12px 0;
+}
+
+.command-archive-bar button {
+  height: 22px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+  font: 11px/22px var(--ui-font-family), "PingFang SC", sans-serif;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+#command-blocks:not(.is-open) .command-block:not(:last-of-type) {
+  display: none;
+}
+
+#command-blocks .command-block {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+  width: 100%;
+  margin: 0;
+  padding: 8px 12px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+}
+
+#command-blocks .command-block header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+#command-blocks .command-block header strong {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.command-block-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.command-block-time {
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted) 16%, transparent);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+.command-block.is-active .command-block-time {
+  background: color-mix(in srgb, var(--success) 16%, transparent);
+  color: var(--success);
+}
+
+.command-block-output {
+  max-height: 96px;
+  margin: 0;
+  overflow: auto;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.command-block.is-collapsed .command-block-output,
+.command-block.is-collapsed .command-block-meta {
+  display: none;
+}
+
+.audit-log {
+  max-height: 160px;
+  margin: 8px 0 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-size: 11px;
+}
+
 .terminal-column {
   position: relative;
 }

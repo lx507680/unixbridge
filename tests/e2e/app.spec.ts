@@ -143,7 +143,7 @@ test('opens the Warp-like workspace and runs a command', async () => {
         },
         { width, height: 900 }
       )
-      await window.waitForTimeout(100)
+      await window.waitForTimeout(300)
       const terminalBox = await window.locator('.terminal-column').boundingBox()
       const systemBox = await window.locator('#widgets-panel').boundingBox()
       if (!terminalBox || !systemBox) throw new Error(`${width}px 下系统面板不可见`)

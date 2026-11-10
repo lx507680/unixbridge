@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, protocol, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron'
+import { app, BrowserWindow, ipcMain, Notification, protocol, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron'
 import { randomBytes } from 'node:crypto'
 import { createReadStream, existsSync } from 'node:fs'
 import { appendFile, readFile, stat } from 'node:fs/promises'
@@ -21,6 +21,8 @@ import { localeEnv } from '../core/locale'
 import { normalizeUserPath, resolveHomePath } from '../core/path'
 import { parseCommandLine } from '../core/parser'
 import { previewMime } from '../core/preview/kind'
+import { ensureShellIntegration, powershellStartup } from '../core/shell/integration'
+import { scanTerminalOutput, presentCommandOutput, collectCommandOutput, type TerminalInputMode } from '../core/terminal/screen-mode'
 import { ShellState } from '../core/shellstate'
 import { sshLaunchArguments, type SshTarget } from '../core/ssh/target'
 import { sanitizeStoredWorkspace, type StoredWorkspace } from '../core/workspace/stored'
@@ -35,13 +37,25 @@ protocol.registerSchemesAsPrivileged([
 ])
 
 interface PtySession {
+  id: string
   ownerId: number
   terminal: pty.IPty
   gate: PtyGateState
   shell: ShellState
+  inputMode: TerminalInputMode
+  integrationSeen: boolean
+  awaitingPrompt: boolean
+  promptClosesCommand: boolean
+  lastCommand: string
+  commandStartedAt: number
+  commandOutput: string
+  outputCarry: string
+  promptTimer?: NodeJS.Timeout
 }
 
 const sessions = new Map<string, PtySession>()
+const previewToken = randomBytes(24).toString('hex')
+let mainWindow: BrowserWindow | null = null
 
 function isTrustedSender(event: IpcMainEvent | IpcMainInvokeEvent): boolean {
   const window = BrowserWindow.fromWebContents(event.sender)
@@ -96,7 +110,8 @@ function spawnShell(
   cols: number,
   rows: number,
   ssh?: SshTarget,
-  sessionId = ''
+  sessionId = '',
+  loadProfile = true
 ): { terminal: pty.IPty; shell: string } {
   const options: pty.IPtyForkOptions = {
     name: 'xterm-256color',
@@ -115,16 +130,34 @@ function spawnShell(
   }
 
   if (process.platform !== 'win32') {
-    const shell = process.env.SHELL ?? '/bin/zsh'
-    return { terminal: pty.spawn(shell, ['-l'], options), shell: shellName(shell) }
+    const shellPath = process.env.SHELL ?? '/bin/zsh'
+    const integration = ensureShellIntegration(app.getPath('userData'))
+    const shellBase = basename(shellPath).toLowerCase()
+    if (shellBase === 'bash') {
+      return {
+        terminal: pty.spawn(shellPath, ['--rcfile', integration.bash, '-i'], options),
+        shell: shellName(shellPath)
+      }
+    }
+    if (shellBase === 'zsh' || shellBase === '') {
+      return {
+        terminal: pty.spawn(shellPath, ['-l'], {
+          ...options,
+          env: { ...options.env, ZDOTDIR: integration.zsh }
+        }),
+        shell: shellName(shellPath)
+      }
+    }
+    return { terminal: pty.spawn(shellPath, ['-l'], options), shell: shellName(shellPath) }
   }
 
   let lastError: unknown
+  const args = ['-NoLogo', '-NoExit', '-Command', powershellStartup(loadProfile)]
   for (const candidate of windowsShellCandidates()) {
     if (candidate.includes('\\') && !existsSync(candidate)) continue
     try {
       return {
-        terminal: pty.spawn(candidate, ['-NoLogo', '-NoProfile'], { ...options, useConpty: true }),
+        terminal: pty.spawn(candidate, args, { ...options, useConpty: true }),
         shell: 'PowerShell'
       }
     } catch (error) {
@@ -137,6 +170,7 @@ function spawnShell(
 function disposeSession(sessionId: string): void {
   const session = sessions.get(sessionId)
   if (!session) return
+  if (session.promptTimer) clearTimeout(session.promptTimer)
   sessions.delete(sessionId)
   try {
     session.terminal.kill()
@@ -171,7 +205,81 @@ function auditFile(): string {
 }
 
 function rememberAudit(record: AuditRecord): void {
-  void appendFile(auditFile(), `${JSON.stringify(record)}\n`).catch(() => undefined)
+  const file = auditFile()
+  void appendFile(file, `${JSON.stringify(record)}\n`)
+    .then(async () => {
+      const details = await stat(file).catch(() => null)
+      if (!details || details.size < 256 * 1024) return
+      const lines = (await readFile(file, 'utf8')).trim().split(/\r?\n/).slice(-200)
+      await writeAtomic(file, `${lines.join('\n')}\n`)
+    })
+    .catch(() => undefined)
+}
+
+async function recentAudit(): Promise<AuditRecord[]> {
+  try {
+    const lines = (await readFile(auditFile(), 'utf8')).trim().split(/\r?\n/).slice(-40)
+    return lines.flatMap((line) => {
+      try {
+        return [JSON.parse(line) as AuditRecord]
+      } catch {
+        return []
+      }
+    })
+  } catch {
+    return []
+  }
+}
+
+function publishMode(session: PtySession, sender: Electron.WebContents, output = ''): void {
+  if (!sender.isDestroyed()) {
+    sender.send('pty:mode', {
+      sessionId: session.id,
+      mode: session.inputMode,
+      ...(output ? { output } : {})
+    })
+  }
+}
+
+function finishCommand(session: PtySession, sender: Electron.WebContents): void {
+  const elapsed = Date.now() - session.commandStartedAt
+  const command = session.lastCommand
+  const output = presentCommandOutput(session.commandOutput)
+  session.commandOutput = ''
+  session.awaitingPrompt = false
+  session.gate.buffer.reset()
+  session.gate.pending = null
+  if (session.promptTimer) clearTimeout(session.promptTimer)
+  if (command && elapsed >= 1500 && mainWindow && !mainWindow.isDestroyed() && !mainWindow.isFocused()) {
+    new Notification({
+      title: '命令已结束',
+      body: command.slice(0, 120)
+    }).show()
+  }
+  publishMode(session, sender, output)
+}
+
+function schedulePromptFallback(session: PtySession, sender: Electron.WebContents): void {
+  if (session.inputMode !== 'running' || session.promptClosesCommand) return
+  if (session.promptTimer) clearTimeout(session.promptTimer)
+  session.promptTimer = setTimeout(() => {
+    if (session.inputMode !== 'running' || session.promptClosesCommand) return
+    session.inputMode = 'prompt'
+    finishCommand(session, sender)
+  }, 800)
+}
+
+function markCommandRunning(session: PtySession, sender: Electron.WebContents, line: string): void {
+  session.inputMode = 'running'
+  session.awaitingPrompt = Boolean(line)
+  session.promptClosesCommand = false
+  session.commandOutput = ''
+  session.lastCommand = line
+  session.commandStartedAt = Date.now()
+  session.gate.buffer.reset()
+  session.gate.pending = null
+  publishMode(session, sender)
+  schedulePromptFallback(session, sender)
 }
 
 function publicWriteResult(sessionId: string, result: ReturnType<typeof gatePtyChunk>): PtyWriteResult & { sessionId: string } {
@@ -188,14 +296,24 @@ function publicWriteResult(sessionId: string, result: ReturnType<typeof gatePtyC
 
 function applyPtyInput(
   session: PtySession,
-  data: string
+  data: string,
+  sender: Electron.WebContents
 ): ReturnType<typeof gatePtyChunk> {
+  if (session.inputMode === 'application') {
+    session.terminal.write(data)
+    return { forward: data, decision: null, line: '' }
+  }
+  const modeBefore = session.inputMode
   const result = gatePtyChunk(session.gate, data, {
     cwd: session.shell.cwd,
     platform: process.platform,
     createToken: () => randomBytes(16).toString('hex')
   })
-  if (result.forward) session.terminal.write(result.forward)
+  let forward = result.forward
+  if (modeBefore === 'running' && result.decision?.action === 'deny') {
+    forward = `${forward.replaceAll('\u0003', '')}\u0015`
+  }
+  if (forward) session.terminal.write(forward)
   const decision = result.decision
   if (decision?.audit && decision.action !== 'confirm') {
     rememberAudit({
@@ -206,7 +324,10 @@ function applyPtyInput(
       outcome: decision.action === 'deny' ? 'denied' : 'executed'
     })
   }
-  if (decision && (decision.action === 'allow' || decision.action === 'warn') && result.line) {
+  if (decision && (decision.action === 'allow' || decision.action === 'warn') && result.line && /[\r\n]/.test(data)) {
+    noteSubmittedCommand(session.shell, result.line)
+    markCommandRunning(session, sender, result.line)
+  } else if (decision && (decision.action === 'allow' || decision.action === 'warn') && result.line) {
     noteSubmittedCommand(session.shell, result.line)
   }
   return result
@@ -215,7 +336,7 @@ function applyPtyInput(
 function registerPtyIpc(): void {
   ipcMain.handle(
     'pty:start',
-    (event, request: { sessionId: string; cols: number; rows: number; ssh?: SshTarget }) => {
+    (event, request: { sessionId: string; cols: number; rows: number; ssh?: SshTarget; loadProfile?: boolean }) => {
     if (!isTrustedSender(event)) throw new Error('拒绝不受信任的 PTY 请求')
       const sessionId = String(request.sessionId ?? '')
       if (!/^[a-zA-Z0-9-]{8,80}$/.test(sessionId)) throw new Error('无效的终端会话标识')
@@ -229,16 +350,51 @@ function registerPtyIpc(): void {
       const cols = Math.max(2, Math.floor(request.cols))
       const rows = Math.max(1, Math.floor(request.rows))
       if (request.ssh) sshLaunchArguments(request.ssh, sessionId)
-      const { terminal, shell } = spawnShell(cols, rows, request.ssh, sessionId)
-      sessions.set(sessionId, {
+      const { terminal, shell } = spawnShell(cols, rows, request.ssh, sessionId, request.loadProfile !== false)
+      const session: PtySession = {
+        id: sessionId,
         ownerId: event.sender.id,
         terminal,
         gate: createPtyGateState(),
-        shell: new ShellState(homedir())
-      })
+        shell: new ShellState(homedir()),
+        inputMode: 'prompt',
+        integrationSeen: false,
+        awaitingPrompt: false,
+        promptClosesCommand: false,
+        lastCommand: '',
+        commandStartedAt: 0,
+        commandOutput: '',
+        outputCarry: ''
+      }
+      sessions.set(sessionId, session)
 
       terminal.onData((data) => {
-        if (!event.sender.isDestroyed()) event.sender.send('pty:data', { sessionId, data })
+        const combined = session.outputCarry + data
+        const scan = scanTerminalOutput(session.inputMode, combined)
+        session.outputCarry = scan.pending
+        const ready = scan.pending ? combined.slice(0, -scan.pending.length) : combined
+        const wasCapturing = session.promptClosesCommand
+        const collected = collectCommandOutput(session.commandOutput, wasCapturing, ready)
+        if (wasCapturing || collected.capturing || collected.output) session.commandOutput = collected.output
+        const previous = session.inputMode
+        if (scan.sawPrompt || scan.sawCommandStart) session.integrationSeen = true
+        if (scan.sawCommandStart) {
+          session.promptClosesCommand = true
+          if (session.promptTimer) clearTimeout(session.promptTimer)
+        }
+        const closeThisCommand = scan.sawPrompt && session.awaitingPrompt && session.promptClosesCommand
+        if (closeThisCommand) {
+          session.inputMode = 'prompt'
+          session.promptClosesCommand = false
+          finishCommand(session, event.sender)
+        } else {
+          session.inputMode = scan.mode === 'prompt' && session.awaitingPrompt ? 'running' : scan.mode
+          if (previous !== session.inputMode) publishMode(session, event.sender)
+          if (session.inputMode === 'running') schedulePromptFallback(session, event.sender)
+        }
+        if (scan.output && !event.sender.isDestroyed()) {
+          event.sender.send('pty:data', { sessionId, data: scan.output })
+        }
       })
       terminal.onExit(({ exitCode }) => {
         if (sessions.get(sessionId)?.terminal !== terminal) return
@@ -254,9 +410,16 @@ function registerPtyIpc(): void {
     if (!isTrustedSender(event) || typeof request?.data !== 'string') return
     const session = sessions.get(request.sessionId)
     if (session?.ownerId !== event.sender.id) return
-    const result = applyPtyInput(session, request.data)
+    const interactive = session.inputMode === 'running'
+    const result = applyPtyInput(session, request.data, event.sender)
     const decision = result.decision
-    if (!decision || decision.action === 'allow' || decision.ruleId === 'opaque-line' || decision.ruleId === 'empty-line') {
+    if (
+      !decision ||
+      decision.action === 'allow' ||
+      (interactive && decision.action === 'warn') ||
+      decision.ruleId === 'opaque-line' ||
+      decision.ruleId === 'empty-line'
+    ) {
       return
     }
     if (!event.sender.isDestroyed()) event.sender.send('pty:risk', publicWriteResult(request.sessionId, result))
@@ -268,12 +431,14 @@ function registerPtyIpc(): void {
     }
     const session = sessions.get(String(request.sessionId ?? ''))
     if (session?.ownerId !== event.sender.id) throw new Error('终端会话不存在')
-    const result = applyPtyInput(session, request.data)
+    const interactive = session.inputMode === 'running'
+    const result = applyPtyInput(session, request.data, event.sender)
     const payload = publicWriteResult(request.sessionId, result)
     const decision = result.decision
     if (
       decision &&
       decision.action !== 'allow' &&
+      !(interactive && decision.action === 'warn') &&
       decision.ruleId !== 'opaque-line' &&
       decision.ruleId !== 'empty-line' &&
       !event.sender.isDestroyed()
@@ -292,6 +457,7 @@ function registerPtyIpc(): void {
     const decision = assessSubmittedLine(released.line, session.shell.cwd, process.platform)
     session.terminal.write(released.data)
     noteSubmittedCommand(session.shell, released.line)
+    markCommandRunning(session, event.sender, released.line)
     rememberAudit({
       timestamp: new Date().toISOString(),
       input: released.line.slice(0, 2000),
@@ -308,7 +474,7 @@ function registerPtyIpc(): void {
     if (session?.ownerId !== event.sender.id) return { cancelled: false }
     const cancelled = cancelConfirmedLine(session.gate, String(request?.token ?? ''))
     if (!cancelled) return { cancelled: false }
-    session.terminal.write(cancelled.data)
+    session.terminal.write(session.inputMode === 'running' ? '\u0015' : cancelled.data)
     const decision = assessSubmittedLine(cancelled.line, session.shell.cwd, process.platform)
     rememberAudit({
       timestamp: new Date().toISOString(),
@@ -354,8 +520,12 @@ function createWindow(): void {
     }
   })
 
+  mainWindow = window
   const webContentsId = window.webContents.id
-  window.on('closed', () => disposeOwnerSessions(webContentsId))
+  window.on('closed', () => {
+    if (mainWindow === window) mainWindow = null
+    disposeOwnerSessions(webContentsId)
+  })
 
   if (process.env.ELECTRON_RENDERER_URL) {
     void window.loadURL(process.env.ELECTRON_RENDERER_URL)
@@ -367,7 +537,9 @@ function createWindow(): void {
 function registerPreviewProtocol(): void {
   protocol.handle('unixbridge', async (request) => {
     const url = new URL(request.url)
-    if (url.hostname !== 'preview') return new Response('not found', { status: 404 })
+    if (url.hostname !== 'preview' || url.searchParams.get('token') !== previewToken) {
+      return new Response('not found', { status: 404 })
+    }
     try {
       const filePath = await resolveHomePath(url.searchParams.get('path') ?? '')
       const details = await stat(filePath)
@@ -375,7 +547,13 @@ function registerPreviewProtocol(): void {
         return new Response('unsupported', { status: 415 })
       }
       const stream = Readable.toWeb(createReadStream(filePath)) as ReadableStream
-      return new Response(stream, { headers: { 'content-type': previewMime(filePath) } })
+      return new Response(stream, {
+        headers: {
+          'content-type': previewMime(filePath),
+          'x-content-type-options': 'nosniff',
+          'content-security-policy': "default-src 'none'; sandbox"
+        }
+      })
     } catch {
       return new Response('forbidden', { status: 403 })
     }
@@ -391,13 +569,17 @@ function registerSessionIpc(): void {
     if (!isTrustedSender(event)) throw new Error('拒绝不受信任的会话请求')
     return saveStoredSessions(input)
   })
+  ipcMain.handle('audit:recent', async (event) => {
+    if (!isTrustedSender(event)) throw new Error('拒绝不受信任的审计请求')
+    return recentAudit()
+  })
 }
 
 app.whenReady().then(() => {
   registerPreviewProtocol()
   registerPtyIpc()
   registerSessionIpc()
-  registerWorkspaceIpc(isTrustedSender)
+  registerWorkspaceIpc(isTrustedSender, previewToken)
   createWindow()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

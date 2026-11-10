@@ -199,7 +199,8 @@ async function listNodeRuntimes(): Promise<Array<{ version: string; source: stri
 }
 
 export function registerWorkspaceIpc(
-  isTrustedSender: (event: IpcMainEvent | IpcMainInvokeEvent) => boolean
+  isTrustedSender: (event: IpcMainEvent | IpcMainInvokeEvent) => boolean,
+  previewToken = ''
 ): void {
   ipcMain.handle('ai:load', async (event) => {
     if (!isTrustedSender(event)) throw new Error('拒绝不受信任的 AI 配置请求')
@@ -419,7 +420,7 @@ export function registerWorkspaceIpc(
       if (details.size > 20 * 1024 * 1024) {
         return { path: filePath, name, kind, message: '文件超过 20MB，无法在面板中预览' }
       }
-      return { path: filePath, name, kind, url: previewUrl(filePath) }
+      return { path: filePath, name, kind, url: previewUrl(filePath, previewToken) }
     }
     if (details.size > TEXT_PREVIEW_LIMIT) {
       return { path: filePath, name, kind, message: '文本超过 512KB，无法在面板中完整预览' }

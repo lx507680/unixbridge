@@ -101,6 +101,10 @@ export class LineBuffer {
       this.cursor = this.text.length
       return 'data'
     }
+    if (char === '\u000b') {
+      if (!this.unknown) this.text = this.text.slice(0, this.cursor)
+      return 'data'
+    }
     if (char >= ' ') this.insert(char)
     return 'data'
   }

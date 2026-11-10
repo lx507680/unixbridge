@@ -1,4 +1,5 @@
 import { FitAddon } from '@xterm/addon-fit'
+import { SearchAddon } from '@xterm/addon-search'
 import { Terminal } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
 import { formatChangeChip, isSafeBranchName, shellQuote } from '../core/workspace/git'
@@ -32,6 +33,13 @@ const commandRiskText = element<HTMLElement>('#command-risk-text')
 const commandRiskApprove = element<HTMLButtonElement>('#command-risk-approve')
 const commandRiskCancel = element<HTMLButtonElement>('#command-risk-cancel')
 const terminalNotice = element<HTMLElement>('#terminal-notice')
+const terminalSearch = element<HTMLFormElement>('#terminal-search')
+const terminalSearchInput = element<HTMLInputElement>('#terminal-search-input')
+const commandBlocks = element<HTMLElement>('#command-blocks')
+const powershellProfileButton = element<HTMLButtonElement>('#toggle-powershell-profile')
+const showAuditButton = element<HTMLButtonElement>('#show-audit')
+const auditLog = element<HTMLElement>('#audit-log')
+const shellBehaviorStatus = element<HTMLElement>('#shell-behavior-status')
 const status = element<HTMLElement>('#session-status')
 const commandSearch = element<HTMLInputElement>('#command-search')
 const commandSearchResults = element<HTMLElement>('#command-search-results')
@@ -140,6 +148,7 @@ interface AppearanceSettings {
   settingsWidth: number
   commandCompletion: boolean
   historySuggestions: boolean
+  loadPowerShellProfile: boolean
 }
 
 const defaultSettings: AppearanceSettings = {
@@ -158,7 +167,8 @@ const defaultSettings: AppearanceSettings = {
   fontFamily: 'Cascadia Code',
   settingsWidth: 320,
   commandCompletion: true,
-  historySuggestions: true
+  historySuggestions: true,
+  loadPowerShellProfile: true
 }
 
 function loadSettings(): AppearanceSettings {
@@ -208,6 +218,8 @@ const commandHistory: string[] = (() => {
     return []
   }
 })()
+let historyCursor = -1
+let copyResetTimer = 0
 const metricHistory: number[] = []
 let currentFilePath: string | undefined
 
@@ -252,7 +264,9 @@ const terminal = new Terminal({
   theme: terminalThemes[appearance.theme]
 })
 const fitAddon = new FitAddon()
+const searchAddon = new SearchAddon()
 terminal.loadAddon(fitAddon)
+terminal.loadAddon(searchAddon)
 terminal.open(container)
 fitAddon.fit()
 
@@ -266,6 +280,11 @@ interface UiSession {
   statusState: '' | 'running' | 'stopped'
   output: string
   inputBuffer: string
+  inputMode: 'prompt' | 'running' | 'application'
+  lastSubmitted: string
+  commandArchiveOpen: boolean
+  commandEntries: HTMLElement[]
+  runningBlock: HTMLElement | null
   currentDirectory?: string
   groupId?: string
   nodeLabel?: string
@@ -485,6 +504,7 @@ function switchSession(sessionId: string): void {
   terminal.reset()
   if (session.output) terminal.write(session.output)
   refreshCompletions(session.inputBuffer)
+  renderSessionCommandArchive()
   renderSessionList()
   syncActiveSessionUi()
   requestAnimationFrame(() => {
@@ -598,6 +618,11 @@ function saveAndApplyAppearance(): void {
   commandCompletionButton.setAttribute('aria-pressed', String(appearance.commandCompletion))
   historySuggestionsButton.classList.toggle('is-selected', appearance.historySuggestions)
   historySuggestionsButton.setAttribute('aria-pressed', String(appearance.historySuggestions))
+  powershellProfileButton.classList.toggle('is-selected', appearance.loadPowerShellProfile)
+  powershellProfileButton.setAttribute('aria-pressed', String(appearance.loadPowerShellProfile))
+  shellBehaviorStatus.textContent = appearance.loadPowerShellProfile
+    ? 'Windows 启动时读取 PowerShell 配置。新的终端会话才会用到这项。'
+    : 'Windows 启动时跳过 PowerShell 配置，启动更快，但没有你的别名和提示符。'
   inputAssistStatus.textContent =
     appearance.commandCompletion && appearance.historySuggestions
       ? '输入时显示常用命令补全和历史命令。'
@@ -1495,6 +1520,16 @@ const removeExitListener = window.unixbridge.onExit((sessionId, exitCode) => {
   renderSessionList()
   syncActiveSessionUi()
 })
+const removeModeListener = window.unixbridge.onMode((sessionId, mode, output) => {
+  const session = uiSessions.get(sessionId)
+  if (!session) return
+  session.inputMode = mode
+  if (mode === 'prompt') {
+    if (output) rememberCommandOutput(session, output)
+    finishCommandBlock(session)
+    if (sessionId === activeSessionId) hideCompletions()
+  }
+})
 const removeRiskListener = window.unixbridge.onRisk((sessionId, result) => {
   if (sessionId !== activeSessionId) return
   showCommandRisk(sessionId, result)
@@ -1718,6 +1753,8 @@ function renderSemanticMetadata(
   semanticDetails.hidden = !expanded
   semanticToggle.setAttribute('aria-expanded', String(expanded))
   semanticBlock.hidden = false
+  const meta = getActiveSession()?.runningBlock?.querySelector('.command-block-meta') ?? null
+  if (meta) meta.append(semanticBlock)
   relayoutTerminal()
 }
 
@@ -1878,6 +1915,10 @@ function toggleInputAssist(kind: 'commandCompletion' | 'historySuggestions'): vo
 
 commandCompletionButton.addEventListener('click', () => toggleInputAssist('commandCompletion'))
 historySuggestionsButton.addEventListener('click', () => toggleInputAssist('historySuggestions'))
+powershellProfileButton.addEventListener('click', () => {
+  appearance.loadPowerShellProfile = !appearance.loadPowerShellProfile
+  saveAndApplyAppearance()
+})
 
 function showTerminalNotice(message: string): void {
   terminalNotice.hidden = message.length === 0
@@ -1891,6 +1932,138 @@ function hideCommandRisk(): void {
   delete commandRisk.dataset.line
   commandRiskText.textContent = ''
   commandRiskApprove.hidden = false
+}
+
+function replacePromptLine(session: UiSession, command: string): void {
+  void window.unixbridge.write(session.id, `\u0001\u000b${command}`)
+  session.inputBuffer = command
+  refreshCompletions(command)
+}
+
+function renderSessionCommandArchive(): void {
+  const session = getActiveSession()
+  commandBlocks.replaceChildren()
+  if (!session || session.commandEntries.length === 0) {
+    commandBlocks.hidden = true
+    commandBlocks.classList.remove('is-open')
+    return
+  }
+  commandBlocks.hidden = false
+  commandBlocks.classList.toggle('is-open', session.commandArchiveOpen)
+  const older = session.commandEntries.length - 1
+  if (older > 0) {
+    const bar = document.createElement('div')
+    bar.className = 'command-archive-bar'
+    const toggle = document.createElement('button')
+    toggle.type = 'button'
+    toggle.textContent = session.commandArchiveOpen ? '收起更早的命令' : `更早的 ${older} 条`
+    toggle.addEventListener('click', () => {
+      session.commandArchiveOpen = !session.commandArchiveOpen
+      renderSessionCommandArchive()
+      requestAnimationFrame(() => {
+        fitAddon.fit()
+        resizeActiveTerminal()
+      })
+    })
+    bar.append(toggle)
+    commandBlocks.append(bar)
+  }
+  commandBlocks.append(...session.commandEntries)
+}
+
+function beginCommandBlock(session: UiSession, command: string): void {
+  if (!command) return
+  finishCommandBlock(session)
+  const block = document.createElement('article')
+  block.className = 'command-block is-active'
+  const header = document.createElement('header')
+  const title = document.createElement('strong')
+  title.textContent = command
+  const actions = document.createElement('div')
+  actions.className = 'command-block-actions'
+  const time = document.createElement('span')
+  time.className = 'command-block-time'
+  time.textContent = '运行中'
+  const copy = document.createElement('button')
+  copy.type = 'button'
+  copy.textContent = '复制'
+  const meta = document.createElement('div')
+  meta.className = 'command-block-meta'
+  copy.addEventListener('click', () => {
+    const body = block.querySelector('.command-block-output')?.textContent?.trim() ?? ''
+    void copyCommandText(body ? `${command}\n${body}` : command).then((copied) => {
+      if (!copied) return
+      copy.textContent = '已复制'
+      window.clearTimeout(copyResetTimer)
+      copyResetTimer = window.setTimeout(() => {
+        copy.textContent = '复制'
+      }, 1200)
+    })
+  })
+  actions.append(time, copy)
+  header.append(title, actions)
+  block.append(header, meta)
+  session.commandEntries.push(block)
+  while (session.commandEntries.length > 20) session.commandEntries.shift()
+  session.runningBlock = block
+  if (session.id === activeSessionId) renderSessionCommandArchive()
+}
+
+function copyCommandText(text: string): Promise<boolean> {
+  if (navigator.clipboard?.writeText) {
+    return navigator.clipboard.writeText(text).then(
+      () => true,
+      () => copyCommandTextFallback(text)
+    )
+  }
+  return Promise.resolve(copyCommandTextFallback(text))
+}
+
+function copyCommandTextFallback(text: string): boolean {
+  const area = document.createElement('textarea')
+  area.value = text
+  document.body.append(area)
+  area.select()
+  const copied = document.execCommand('copy')
+  area.remove()
+  return copied
+}
+
+function rememberCommandOutput(session: UiSession, text: string): void {
+  const block = session.runningBlock
+  if (!block || !text) return
+  let output = block.querySelector('.command-block-output')
+  if (!(output instanceof HTMLElement)) {
+    output = document.createElement('pre')
+    output.className = 'command-block-output'
+    block.append(output)
+  }
+  output.textContent = text
+  block.classList.add('is-collapsed')
+  if (block.querySelector('.command-output-toggle')) return
+  const toggle = document.createElement('button')
+  toggle.type = 'button'
+  toggle.className = 'command-output-toggle'
+  toggle.textContent = '展开'
+  toggle.addEventListener('click', () => {
+    const collapsed = block.classList.toggle('is-collapsed')
+    toggle.textContent = collapsed ? '展开' : '收起'
+    requestAnimationFrame(() => {
+      fitAddon.fit()
+      resizeActiveTerminal()
+    })
+  })
+  block.querySelector('.command-block-actions')?.append(toggle)
+}
+
+function finishCommandBlock(session: UiSession): void {
+  const block = session.runningBlock
+  if (!block) return
+  block.classList.remove('is-active')
+  const time = block.querySelector('.command-block-time')
+  if (time && time.textContent === '运行中') time.textContent = '已结束'
+  session.runningBlock = null
+  if (session.id === activeSessionId) renderSessionCommandArchive()
 }
 
 function showCommandRisk(sessionId: string, result: PtyWriteResult): void {
@@ -1928,6 +2101,7 @@ async function submitTerminalLine(session: UiSession, data: string): Promise<voi
     outbound = `${'\u007f'.repeat(session.inputBuffer.length)}${translated.shellLine}\r`
     showTerminalNotice(translated.notice)
   }
+  if (submittedCommand) finishCommandBlock(session)
   const result = await window.unixbridge.write(session.id, outbound)
   if (result.action === 'deny') {
     session.inputBuffer = ''
@@ -1939,21 +2113,24 @@ async function submitTerminalLine(session: UiSession, data: string): Promise<voi
     return
   }
   if (!translated?.changed && result.action !== 'warn') showTerminalNotice('')
+  const command = result.line || submittedCommand
   session.inputBuffer = ''
-  if (submittedCommand) {
-    recordCommand(submittedCommand)
-    void showWorkspaceContext(submittedCommand)
+  session.inputMode = 'running'
+  session.lastSubmitted = command
+  historyCursor = -1
+  if (command) {
+    recordCommand(command)
+    beginCommandBlock(session, command)
+    void showWorkspaceContext(command)
   }
   hideCompletions()
-  if (structured) void showStructuredMetadata(session, submittedCommand, structured)
+  if (structured) void showStructuredMetadata(session, command, structured)
 }
 
 function acceptCompletion(command: string): void {
   const session = getActiveSession()
-  if (!session) return
-  const backspaces = '\u007f'.repeat(session.inputBuffer.length)
-  session.inputBuffer = command
-  void window.unixbridge.write(session.id, `${backspaces}${command}`)
+  if (!session || session.inputMode !== 'prompt') return
+  replacePromptLine(session, command)
   hideCompletions()
   terminal.focus()
 }
@@ -1965,7 +2142,7 @@ terminal.onData((data) => {
     toggleSemanticDetails()
     return
   }
-  if ((data === '\u001b[A' || data === '\u001b[B') && completionItems.length > 0) {
+  if (session.inputMode === 'prompt' && (data === '\u001b[A' || data === '\u001b[B') && completionItems.length > 0) {
     completionIndex =
       data === '\u001b[A'
         ? (completionIndex - 1 + completionItems.length) % completionItems.length
@@ -1973,11 +2150,19 @@ terminal.onData((data) => {
     renderCompletions()
     return
   }
+  if (session.inputMode === 'prompt' && (data === '\u001b[A' || data === '\u001b[B') && completionItems.length === 0) {
+    const next = data === '\u001b[A'
+      ? (historyCursor < 0 ? commandHistory.length - 1 : Math.max(0, historyCursor - 1))
+      : historyCursor + 1
+    historyCursor = next >= commandHistory.length ? -1 : next
+    replacePromptLine(session, historyCursor < 0 ? '' : commandHistory[historyCursor] ?? '')
+    return
+  }
   if (data === '\u001b' && completionItems.length > 0) {
     hideCompletions()
     return
   }
-  if (data === '\t') {
+  if (session.inputMode === 'prompt' && data === '\t') {
     if (completionItems.length === 0) refreshCompletions(session.inputBuffer)
     const chosen = completionItems[completionIndex]
     if (chosen) {
@@ -1987,19 +2172,43 @@ terminal.onData((data) => {
   }
 
   if (data === '\r' || data === '\n') {
+    if (session.inputMode === 'running') {
+      finishCommandBlock(session)
+      void window.unixbridge.write(session.id, data).then((result) => {
+        if (!result.line || (result.action !== 'allow' && result.action !== 'warn')) return
+        session.lastSubmitted = result.line
+        recordCommand(result.line)
+        beginCommandBlock(session, result.line)
+        void showWorkspaceContext(result.line)
+      })
+      return
+    }
+    if (session.inputMode !== 'prompt') {
+      void window.unixbridge.write(session.id, data)
+      return
+    }
     void submitTerminalLine(session, data)
     return
   }
   hideCommandRisk()
   void window.unixbridge.write(session.id, data)
-  if (data.startsWith('\u001b')) return
+  if (session.inputMode === 'application' || data.startsWith('\u001b')) return
+  if (session.inputMode === 'running') {
+    for (const character of data) {
+      if (character === '\u007f' || character === '\b') session.inputBuffer = session.inputBuffer.slice(0, -1)
+      else if (character === '\u0003') session.inputBuffer = ''
+      else if (character >= ' ') session.inputBuffer += character
+    }
+    return
+  }
+  historyCursor = -1
   for (const character of data) {
     if (character === '\u007f') session.inputBuffer = session.inputBuffer.slice(0, -1)
     else if (character === '\u0003') session.inputBuffer = ''
     else if (character >= ' ') session.inputBuffer += character
   }
   if (data === '\u0003') hideCompletions()
-  else if (!data.startsWith('\u001b')) refreshCompletions(session.inputBuffer)
+  else refreshCompletions(session.inputBuffer)
 })
 
 let resizeFrame = 0
@@ -2108,9 +2317,13 @@ async function connectSession(session: UiSession, reconnect = false): Promise<vo
   if (session.id === activeSessionId) syncActiveSessionUi()
   try {
     fitAddon.fit()
-    const started = session.ssh
-      ? await window.unixbridge.start(session.id, terminal.cols, terminal.rows, session.ssh)
-      : await window.unixbridge.start(session.id, terminal.cols, terminal.rows)
+    const started = await window.unixbridge.start(
+      session.id,
+      terminal.cols,
+      terminal.rows,
+      session.ssh,
+      appearance.loadPowerShellProfile
+    )
     if (session.disposed) return
     session.reconnects = 0
     setConnectionState(session, started.platform, started.pid, started.shell)
@@ -2161,6 +2374,11 @@ async function startSession(options?: {
     statusState: '',
     output: '',
     inputBuffer: '',
+    inputMode: 'prompt',
+    lastSubmitted: '',
+    commandArchiveOpen: false,
+    commandEntries: [],
+    runningBlock: null,
     disposed: false,
     reconnects: 0,
     ...(ssh ? { ssh } : {}),
@@ -2169,6 +2387,7 @@ async function startSession(options?: {
   uiSessions.set(sessionId, session)
   activeSessionId = sessionId
   terminal.reset()
+  renderSessionCommandArchive()
   commandSearch.value = ''
   filterCommands('')
   setSessionEditorOpen(false)
@@ -2608,6 +2827,14 @@ element<HTMLElement>('#mobile-menu').addEventListener('click', () => {
 })
 
 window.addEventListener('keydown', (event) => {
+  if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === 'f') {
+    const target = event.target
+    if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) return
+    event.preventDefault()
+    terminalSearch.hidden = false
+    terminalSearchInput.focus()
+    terminalSearchInput.select()
+  }
   if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === 'k') {
     event.preventDefault()
     commandSearch.focus()
@@ -2618,10 +2845,37 @@ window.addEventListener('keydown', (event) => {
   }
 })
 
+terminalSearch.addEventListener('submit', (event) => {
+  event.preventDefault()
+  searchAddon.findNext(terminalSearchInput.value, { caseSensitive: false })
+})
+element<HTMLButtonElement>('#terminal-search-prev').addEventListener('click', () => {
+  searchAddon.findPrevious(terminalSearchInput.value, { caseSensitive: false })
+})
+terminalSearchInput.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape') return
+  terminalSearch.hidden = true
+  terminal.focus()
+})
+showAuditButton.addEventListener('click', () => {
+  const open = auditLog.hidden
+  auditLog.hidden = !open
+  if (!open) return
+  auditLog.textContent = '正在读取…'
+  void window.unixbridge.recentAudit().then((records) => {
+    auditLog.textContent = records.length === 0
+      ? '还没有风险记录。'
+      : records.map((record) => `${record.timestamp}  ${record.outcome}  ${record.decision.ruleId}  ${record.input}`).join('\n')
+  }).catch((error: unknown) => {
+    auditLog.textContent = error instanceof Error ? error.message : String(error)
+  })
+})
+
 window.addEventListener('beforeunload', () => {
   removeDataListener()
   removeExitListener()
   removeRiskListener()
+  removeModeListener()
   resizeObserver.disconnect()
   window.clearInterval(metricsTimer)
 })
