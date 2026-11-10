@@ -46,6 +46,31 @@ export interface FileListing {
   items: FileItem[]
 }
 
+export type PreviewKind = 'markdown' | 'csv' | 'image' | 'video' | 'pdf' | 'text' | 'none'
+
+export interface FilePreview {
+  path: string
+  name: string
+  kind: PreviewKind
+  text?: string
+  url?: string
+  message?: string
+}
+
+export interface SshTarget {
+  user: string
+  host: string
+  port: number
+}
+
+export interface StoredSession {
+  id: string
+  name: string
+  color: string
+  kind: 'local' | 'ssh'
+  ssh?: SshTarget
+}
+
 export interface WorkspaceContext {
   runtime: string
   directory: string
@@ -69,17 +94,21 @@ export interface StructuredCommandResult {
 }
 
 export interface UnixbridgeApi {
-  start: (sessionId: string, cols: number, rows: number) => Promise<PtyStartResult>
+  start: (sessionId: string, cols: number, rows: number, ssh?: SshTarget) => Promise<PtyStartResult>
   write: (sessionId: string, data: string) => void
   resize: (sessionId: string, cols: number, rows: number) => void
   dispose: (sessionId: string) => void
   onData: (listener: (sessionId: string, data: string) => void) => () => void
   onExit: (listener: (sessionId: string, exitCode: number) => void) => () => void
   configureAi: (config: AiConfig) => Promise<{ configured: boolean }>
+  loadAi: () => Promise<AiConfig | null>
   chat: (messages: ChatMessage[]) => Promise<{ content: string }>
   chatStream: (messages: ChatMessage[], onChunk: (chunk: string) => void) => Promise<void>
   metrics: () => Promise<SystemMetrics>
   listFiles: (path?: string) => Promise<FileListing>
+  previewFile: (path: string) => Promise<FilePreview>
+  loadSessions: () => Promise<StoredSession[]>
+  saveSessions: (sessions: StoredSession[]) => Promise<StoredSession[]>
   structuredCommand: (
     command: string,
     args: string[],
@@ -89,7 +118,8 @@ export interface UnixbridgeApi {
 }
 
 const api: UnixbridgeApi = {
-  start: (sessionId, cols, rows) => ipcRenderer.invoke('pty:start', { sessionId, cols, rows }),
+  start: (sessionId, cols, rows, ssh) =>
+    ipcRenderer.invoke('pty:start', { sessionId, cols, rows, ...(ssh ? { ssh } : {}) }),
   write: (sessionId, data) => ipcRenderer.send('pty:write', { sessionId, data }),
   resize: (sessionId, cols, rows) =>
     ipcRenderer.send('pty:resize', { sessionId, cols, rows }),
@@ -111,6 +141,7 @@ const api: UnixbridgeApi = {
     return () => ipcRenderer.removeListener('pty:exit', handler)
   },
   configureAi: (config) => ipcRenderer.invoke('ai:configure', config),
+  loadAi: () => ipcRenderer.invoke('ai:load'),
   chat: (messages) => ipcRenderer.invoke('ai:chat', messages),
   chatStream: (messages, onChunk) =>
     new Promise<void>((resolve, reject) => {
@@ -133,6 +164,9 @@ const api: UnixbridgeApi = {
     }),
   metrics: () => ipcRenderer.invoke('system:metrics'),
   listFiles: (path) => ipcRenderer.invoke('files:list', path),
+  previewFile: (path) => ipcRenderer.invoke('files:preview', path),
+  loadSessions: () => ipcRenderer.invoke('sessions:load'),
+  saveSessions: (sessions) => ipcRenderer.invoke('sessions:save', sessions),
   structuredCommand: (command, args, cwd) =>
     ipcRenderer.invoke('commands:structured', { command, args, cwd }),
   workspaceContext: () => ipcRenderer.invoke('workspace:context')

@@ -1,7 +1,10 @@
 import { FitAddon } from '@xterm/addon-fit'
 import { Terminal } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
-import { renderSemanticTable } from '../core/output/semantic-table'
+import { classifyFile, fileKindLabel, fileKindMark } from './file-icons'
+import { suggestCommands, type CommandSuggestion } from '../core/completion/commands'
+import { displayWidth, renderSemanticTable, type SemanticTableRender } from '../core/output/semantic-table'
+import { parseSshTarget, type SshTarget } from '../core/ssh/target'
 import { parseCommandLine } from '../core/parser'
 import { canStructure, type StructuredPlatform } from '../core/structured'
 import type { ColumnDef } from '../preload'
@@ -14,6 +17,7 @@ function element<T extends Element>(selector: string): T {
 }
 
 const container = element<HTMLElement>('#terminal')
+const commandComplete = element<HTMLElement>('#command-complete')
 const status = element<HTMLElement>('#session-status')
 const commandSearch = element<HTMLInputElement>('#command-search')
 const commandSearchResults = element<HTMLElement>('#command-search-results')
@@ -71,6 +75,14 @@ const terminalContext = element<HTMLElement>('#terminal-context')
 const semanticBlock = element<HTMLElement>('#semantic-block')
 const semanticHeader = element<HTMLElement>('#semantic-header')
 const semanticLegend = element<HTMLElement>('#semantic-legend')
+const previewBlock = element<HTMLElement>('#preview-block')
+const previewTitle = element<HTMLElement>('#preview-title')
+const previewBody = element<HTMLElement>('#preview-body')
+const sshForm = element<HTMLFormElement>('#ssh-form')
+const sshTargetInput = element<HTMLInputElement>('#ssh-target')
+const directoryBrowser = element<HTMLElement>('#directory-browser')
+const directoryBrowserPath = element<HTMLElement>('#directory-browser-path')
+const directoryBrowserList = element<HTMLElement>('#directory-browser-list')
 const semanticDetails = element<HTMLElement>('#semantic-details')
 const semanticToggle = element<HTMLButtonElement>('#semantic-toggle')
 const contextRuntime = element<HTMLElement>('#context-runtime')
@@ -78,6 +90,7 @@ const contextDirectory = element<HTMLElement>('#context-directory')
 const contextBranch = element<HTMLElement>('#context-branch')
 const contextChanges = element<HTMLElement>('#context-changes')
 const contextCommand = element<HTMLElement>('#context-command')
+const layoutStatus = element<HTMLElement>('#layout-status')
 
 workbench.append(settingsResizer, settingsPopover)
 
@@ -227,6 +240,10 @@ interface UiSession {
   output: string
   inputBuffer: string
   currentDirectory?: string
+  ssh?: SshTarget
+  disposed: boolean
+  reconnects: number
+  reconnectTimer?: number
 }
 
 const uiSessions = new Map<string, UiSession>()
@@ -320,6 +337,7 @@ function switchSession(sessionId: string): void {
   activeSessionId = sessionId
   terminal.reset()
   if (session.output) terminal.write(session.output)
+  refreshCompletions(session.inputBuffer)
   renderSessionList()
   syncActiveSessionUi()
   requestAnimationFrame(() => {
@@ -331,8 +349,14 @@ function switchSession(sessionId: string): void {
 
 function removeSession(sessionId: string): void {
   const wasActive = sessionId === activeSessionId
+  const existing = uiSessions.get(sessionId)
+  if (existing) {
+    existing.disposed = true
+    if (existing.reconnectTimer) window.clearTimeout(existing.reconnectTimer)
+  }
   if (!uiSessions.delete(sessionId)) return
   window.unixbridge.dispose(sessionId)
+  rememberSessions()
 
   if (!wasActive) {
     renderSessionList()
@@ -376,32 +400,20 @@ function saveAndApplyAppearance(): void {
   document.documentElement.style.setProperty('--ai-panel-width', `${appearance.aiWidth}px`)
   document.documentElement.style.setProperty('--widgets-panel-width', `${appearance.widgetsWidth}px`)
   document.documentElement.style.setProperty('--settings-panel-width', `${appearance.settingsWidth}px`)
-  const effectiveAiWidth =
-    appearance.layout === 'terminal'
-      ? Math.min(appearance.aiWidth, 230)
-      : appearance.layout === 'assistant'
-        ? Math.max(appearance.aiWidth, 360)
-        : appearance.aiWidth
-  const effectiveWidgetsWidth =
-    appearance.layout === 'terminal' ? Math.min(appearance.widgetsWidth, 250) : appearance.widgetsWidth
-  document.documentElement.style.setProperty(
-    '--ai-column',
-    appearance.panels.includes('ai') ? `${effectiveAiWidth}px` : '0px'
-  )
+  const aiEnabled = appearance.panels.includes('ai')
+  const widgetsEnabled =
+    appearance.panels.includes('metrics') || appearance.panels.includes('files')
+  const showAi = appearance.layout === 'assistant' || (appearance.layout === 'balanced' && aiEnabled)
+  const showWidgets = appearance.layout === 'balanced' && widgetsEnabled
+  const effectiveAiWidth = appearance.layout === 'assistant' ? Math.max(appearance.aiWidth, 400) : appearance.aiWidth
+  const effectiveWidgetsWidth = appearance.widgetsWidth
+  document.documentElement.style.setProperty('--ai-column', showAi ? `${effectiveAiWidth}px` : '0px')
   document.documentElement.style.setProperty(
     '--widgets-column',
-    appearance.panels.includes('metrics') || appearance.panels.includes('files')
-      ? `${effectiveWidgetsWidth}px`
-      : '0px'
+    showWidgets ? `${effectiveWidgetsWidth}px` : '0px'
   )
-  document.documentElement.style.setProperty(
-    '--ai-gutter',
-    appearance.panels.includes('ai') ? '4px' : '0px'
-  )
-  document.documentElement.style.setProperty(
-    '--widgets-gutter',
-    appearance.panels.includes('metrics') || appearance.panels.includes('files') ? '4px' : '0px'
-  )
+  document.documentElement.style.setProperty('--ai-gutter', showAi ? '4px' : '0px')
+  document.documentElement.style.setProperty('--widgets-gutter', showWidgets ? '4px' : '0px')
   aiWidthInput.value = String(appearance.aiWidth)
   widgetsWidthInput.value = String(appearance.widgetsWidth)
   aiWidthValue.value = `${appearance.aiWidth}px`
@@ -411,21 +423,22 @@ function saveAndApplyAppearance(): void {
   fontFamilyInput.value = appearance.fontFamily
   settingsWidthInput.value = String(appearance.settingsWidth)
   settingsWidthValue.value = `${appearance.settingsWidth}px`
-  aiPanel.hidden = !appearance.panels.includes('ai')
-  aiResizer.hidden = !appearance.panels.includes('ai')
-  metricsWidget.hidden = !appearance.panels.includes('metrics')
-  filesWidget.hidden = !appearance.panels.includes('files')
-  widgetsPanel.hidden =
-    !appearance.panels.includes('metrics') && !appearance.panels.includes('files')
+  aiPanel.hidden = !showAi
+  aiResizer.hidden = !showAi
+  metricsWidget.hidden = !showWidgets || !appearance.panels.includes('metrics')
+  filesWidget.hidden = !showWidgets || !appearance.panels.includes('files')
+  widgetsPanel.hidden = !showWidgets
   widgetsResizer.hidden = widgetsPanel.hidden
-  toggleAiButton.classList.toggle('is-active', appearance.panels.includes('ai'))
-  toggleAiButton.setAttribute('aria-pressed', String(appearance.panels.includes('ai')))
+  toggleAiButton.classList.toggle('is-active', showAi)
+  toggleAiButton.setAttribute('aria-pressed', String(showAi))
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-module]')) {
     const module = button.dataset.module
-    button.classList.toggle(
-      'is-active',
-      module === 'terminal' || (module ? appearance.panels.includes(module) : false)
-    )
+    const active =
+      module === 'terminal' ||
+      (module === 'ai' && showAi) ||
+      (module === 'metrics' && showWidgets && appearance.panels.includes('metrics')) ||
+      (module === 'files' && showWidgets && appearance.panels.includes('files'))
+    button.classList.toggle('is-active', active)
   }
 
   renderSessionList()
@@ -448,6 +461,12 @@ function saveAndApplyAppearance(): void {
   for (const input of document.querySelectorAll<HTMLInputElement>('[data-setting="panels"] input')) {
     input.checked = appearance.panels.includes(input.value)
   }
+  layoutStatus.textContent =
+    appearance.layout === 'terminal'
+      ? '终端优先：AI 和右侧面板已收起，终端占满工作区。'
+      : appearance.layout === 'assistant'
+        ? 'AI 优先：AI 面板已展开到至少 400px。'
+        : '均衡：按下方开关和宽度显示 AI 与右侧面板。'
   requestAnimationFrame(() => {
     fitAddon.fit()
     resizeActiveTerminal()
@@ -531,6 +550,7 @@ for (const input of document.querySelectorAll<HTMLInputElement>('[data-setting="
 
 for (const input of document.querySelectorAll<HTMLInputElement>('[data-setting="panels"] input')) {
   input.addEventListener('change', () => {
+    appearance.layout = 'balanced'
     appearance.panels = [...document.querySelectorAll<HTMLInputElement>(
       '[data-setting="panels"] input:checked'
     )].map((item) => item.value)
@@ -541,6 +561,7 @@ for (const input of document.querySelectorAll<HTMLInputElement>('[data-setting="
 }
 
 function togglePanel(panel: 'ai' | 'metrics' | 'files', force?: boolean): void {
+  appearance.layout = 'balanced'
   const shouldShow = force ?? !appearance.panels.includes(panel)
   appearance.panels = shouldShow
     ? [...new Set([...appearance.panels, panel])]
@@ -564,10 +585,12 @@ for (const button of document.querySelectorAll<HTMLButtonElement>('[data-module]
 }
 
 aiWidthInput.addEventListener('input', () => {
+  appearance.layout = 'balanced'
   appearance.aiWidth = Number(aiWidthInput.value)
   saveAndApplyAppearance()
 })
 widgetsWidthInput.addEventListener('input', () => {
+  appearance.layout = 'balanced'
   appearance.widgetsWidth = Number(widgetsWidthInput.value)
   saveAndApplyAppearance()
 })
@@ -699,7 +722,7 @@ async function configureAi(showSuccess = true): Promise<void> {
   try {
     await window.unixbridge.configureAi({
       ...aiPreferences,
-      ...(aiApiKeyInput.value ? { apiKey: aiApiKeyInput.value } : {})
+      apiKey: aiApiKeyInput.value.trim()
     })
     aiConfigStatus.textContent = showSuccess ? 'AI 配置已保存并可用' : 'AI 已就绪'
   } catch (error) {
@@ -926,11 +949,21 @@ async function loadFiles(path?: string): Promise<void> {
           ? `打开或拖到终端：${item.path}`
           : `拖到终端，在所在目录执行命令：${listing.path}`
       const name = document.createElement('span')
-      name.textContent = `${item.type === 'directory' ? '▰' : '·'} ${item.name}`
+      name.className = 'file-name'
+      const label = document.createElement('span')
+      label.textContent = item.name
+      name.append(createFileIcon(classifyFile(item.name, item.type === 'directory' ? 'd' : '')), label)
       const size = document.createElement('span')
       size.textContent = item.type === 'directory' ? '目录' : formatBytes(item.size)
       row.append(name, size)
-      if (item.type === 'directory') row.addEventListener('click', () => void loadFiles(item.path))
+      row.addEventListener('click', () => {
+        if (item.type === 'directory') {
+          if (getActiveSession()) changeTerminalDirectory(item.path)
+          else void loadFiles(item.path)
+          return
+        }
+        void openPreview(item.path)
+      })
       row.addEventListener('dragstart', (event) => {
         const targetDirectory = item.type === 'directory' ? item.path : listing.path
         draggedDirectory = targetDirectory
@@ -957,6 +990,206 @@ filesUpButton.addEventListener('click', () => {
 })
 filesRefreshButton.addEventListener('click', () => void loadFiles(currentFilePath))
 
+function createFileIcon(kind: ReturnType<typeof classifyFile>): HTMLElement {
+  const icon = document.createElement('span')
+  icon.className = `file-kind is-${kind}`
+  icon.title = fileKindLabel(kind)
+  icon.setAttribute('aria-hidden', 'true')
+  icon.textContent = fileKindMark(kind)
+  return icon
+}
+
+function insertTerminalText(text: string): void {
+  const session = getActiveSession()
+  if (!session || !text) return
+  session.inputBuffer += text
+  window.unixbridge.write(session.id, text)
+  terminal.focus()
+}
+
+let lastSemanticRender: SemanticTableRender | null = null
+
+function showDirectoryChip(directory: string): void {
+  const parts = directory.split(/[\\/]/).filter(Boolean)
+  contextDirectory.textContent = parts.length > 0 ? `…/${parts.slice(-2).join('/')}` : directory
+  contextDirectory.title = `查看文件夹：${directory}`
+  contextDirectory.dataset.path = directory
+}
+
+function closeDirectoryBrowser(): void {
+  directoryBrowser.hidden = true
+  contextDirectory.classList.remove('is-open')
+}
+
+function placeDirectoryBrowser(): void {
+  const host = terminalContext.parentElement?.getBoundingClientRect()
+  const chip = contextDirectory.getBoundingClientRect()
+  if (!host) return
+  directoryBrowser.style.left = `${Math.max(8, chip.left - host.left)}px`
+  directoryBrowser.style.top = `${chip.bottom - host.top + 6}px`
+}
+
+async function openDirectoryBrowser(path?: string): Promise<void> {
+  directoryBrowser.hidden = false
+  contextDirectory.classList.add('is-open')
+  placeDirectoryBrowser()
+  directoryBrowserList.textContent = '正在读取…'
+  try {
+    const listing = await window.unixbridge.listFiles(path)
+    showDirectoryChip(listing.path)
+    directoryBrowserPath.textContent = listing.path
+    directoryBrowserList.replaceChildren()
+    if (listing.parent) {
+      const parent = listing.parent
+      const up = document.createElement('button')
+      up.type = 'button'
+      up.className = 'directory-browser-row'
+      up.textContent = '.. 上级目录'
+      up.addEventListener('click', (event) => {
+        event.stopPropagation()
+        void openDirectoryBrowser(parent)
+      })
+      directoryBrowserList.append(up)
+    }
+    for (const item of listing.items) {
+      const row = document.createElement('button')
+      row.type = 'button'
+      row.className = 'directory-browser-row'
+      const label = document.createElement('span')
+      label.textContent = item.name
+      row.append(createFileIcon(classifyFile(item.name, item.type === 'directory' ? 'd' : '')), label)
+      row.addEventListener('click', (event) => {
+        event.stopPropagation()
+        if (item.type === 'directory') {
+          changeTerminalDirectory(item.path)
+          void openDirectoryBrowser(item.path)
+          return
+        }
+        void openPreview(item.path)
+        closeDirectoryBrowser()
+      })
+      directoryBrowserList.append(row)
+    }
+  } catch (error) {
+    directoryBrowserList.textContent = error instanceof Error ? error.message : String(error)
+  }
+}
+
+function clearSemanticEntries(): void {
+  lastSemanticRender = null
+  semanticHeader.className = 'semantic-header'
+  semanticHeader.replaceChildren()
+  semanticLegend.hidden = true
+}
+
+function parseCsv(text: string): string[][] {
+  const rows: string[][] = []
+  let row: string[] = []
+  let cell = ''
+  let quoted = false
+  const source = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index] ?? ''
+    if (quoted) {
+      if (character === '"') {
+        if (source[index + 1] === '"') {
+          cell += '"'
+          index += 1
+        } else quoted = false
+      } else cell += character
+      continue
+    }
+    if (character === '"') {
+      quoted = true
+      continue
+    }
+    if (character === ',') {
+      row.push(cell)
+      cell = ''
+      continue
+    }
+    if (character === '\n') {
+      row.push(cell)
+      rows.push(row)
+      row = []
+      cell = ''
+      continue
+    }
+    cell += character
+  }
+  if (cell.length > 0 || row.length > 0) {
+    row.push(cell)
+    rows.push(row)
+  }
+  return rows.slice(0, 200).map((record) => record.slice(0, 40))
+}
+
+function renderCsv(target: HTMLElement, text: string): void {
+  const table = document.createElement('table')
+  table.className = 'preview-table'
+  for (const [index, record] of parseCsv(text).entries()) {
+    const row = document.createElement('tr')
+    for (const value of record) {
+      const cell = document.createElement(index === 0 ? 'th' : 'td')
+      cell.textContent = value
+      row.append(cell)
+    }
+    table.append(row)
+  }
+  target.replaceChildren(table)
+}
+
+let previewPath = ''
+
+async function openPreview(path: string): Promise<void> {
+  previewPath = path
+  previewTitle.textContent = path.split(/[/\\]/).pop() || path
+  previewBody.textContent = '正在读取…'
+  previewBlock.hidden = false
+  relayoutTerminal()
+  try {
+    const preview = await window.unixbridge.previewFile(path)
+    if (previewPath !== path && previewPath !== preview.path) return
+    previewPath = preview.path
+    previewTitle.textContent = preview.name
+    previewBody.replaceChildren()
+    if (preview.message) {
+      previewBody.textContent = preview.message
+      return
+    }
+    if (preview.kind === 'markdown' && preview.text !== undefined) {
+      renderMarkdown(previewBody, preview.text)
+      return
+    }
+    if (preview.kind === 'csv' && preview.text !== undefined) {
+      renderCsv(previewBody, preview.text)
+      return
+    }
+    if (preview.url && (preview.kind === 'image' || preview.kind === 'video' || preview.kind === 'pdf')) {
+      const node = document.createElement(
+        preview.kind === 'image' ? 'img' : preview.kind === 'video' ? 'video' : 'iframe'
+      )
+      if (node instanceof HTMLVideoElement) node.controls = true
+      if (node instanceof HTMLIFrameElement) node.title = preview.name
+      node.setAttribute('src', preview.url)
+      previewBody.append(node)
+      return
+    }
+    const pre = document.createElement('pre')
+    pre.textContent = preview.text ?? ''
+    previewBody.append(pre)
+  } catch (error) {
+    previewBody.textContent = error instanceof Error ? error.message : String(error)
+  }
+}
+
+function closePreview(): void {
+  previewBlock.hidden = true
+  previewBody.replaceChildren()
+  previewPath = ''
+  relayoutTerminal()
+}
+
 function quoteDirectory(path: string, platform: NodeJS.Platform | null): string {
   if (platform === 'win32') return `'${path.replaceAll("'", "''")}'`
   return `'${path.replaceAll("'", "'\\''")}'`
@@ -974,6 +1207,7 @@ function changeTerminalDirectory(path: string): void {
   session.inputBuffer = ''
   session.currentDirectory = path
   workspaceSubtitle.textContent = path
+  showDirectoryChip(path)
   void loadFiles(path)
   terminal.focus()
 }
@@ -1009,17 +1243,30 @@ const removeDataListener = window.unixbridge.onData((sessionId, data) => {
   const session = uiSessions.get(sessionId)
   if (!session) return
   session.output = `${session.output}${data}`.slice(-1_000_000)
-  if (sessionId === activeSessionId) terminal.write(data)
+  if (sessionId !== activeSessionId) return
+  if (!isScreenClear(data)) {
+    terminal.write(data)
+    return
+  }
+  terminal.write(data, () => {
+    terminal.scrollToLine(terminal.buffer.active.baseY)
+    terminal.focus()
+  })
 })
 const removeExitListener = window.unixbridge.onExit((sessionId, exitCode) => {
   const session = uiSessions.get(sessionId)
-  if (!session) return
+  if (!session || session.disposed) return
   const message = `\r\n\x1b[33m[unixbridge] 终端已退出，退出码 ${exitCode}\x1b[0m\r\n`
+  session.output = `${session.output}${message}`.slice(-1_000_000)
+  if (sessionId === activeSessionId) terminal.write(message)
+  if (scheduleSshReconnect(session)) {
+    renderSessionList()
+    syncActiveSessionUi()
+    return
+  }
   session.statusText = `会话已退出 (${exitCode})`
   session.statusState = 'stopped'
   session.platformLabel = `已退出 · Code ${exitCode}`
-  session.output = `${session.output}${message}`.slice(-1_000_000)
-  if (sessionId === activeSessionId) terminal.write(message)
   renderSessionList()
   syncActiveSessionUi()
 })
@@ -1061,14 +1308,72 @@ function parseStructuredRequest(
   return { command, args, expanded }
 }
 
+function terminalCellWidth(): number {
+  const measured = (
+    terminal as unknown as {
+      _core?: { _renderService?: { dimensions?: { css?: { cell?: { width?: number } } } } }
+    }
+  )._core?._renderService?.dimensions?.css?.cell?.width
+  if (typeof measured === 'number' && measured >= 4 && measured <= 32) return measured
+  let widest = 0
+  for (const canvas of container.querySelectorAll('canvas')) {
+    if (canvas instanceof HTMLCanvasElement) widest = Math.max(widest, canvas.width)
+  }
+  if (widest > 0 && terminal.cols > 0) {
+    const width = widest / window.devicePixelRatio / terminal.cols
+    if (width >= 4 && width <= 32) return width
+  }
+  return 0
+}
+
+function terminalTextOrigin(): number {
+  const screen = container.querySelector('.xterm-screen')
+  if (!(screen instanceof HTMLElement)) return 0
+  return screen.getBoundingClientRect().left - semanticHeader.getBoundingClientRect().left
+}
+
+function paintAlignedLine(text: string, className: string): HTMLElement {
+  const line = document.createElement('div')
+  line.className = className
+  const family = terminal.options.fontFamily || 'monospace'
+  const size = terminal.options.fontSize || 13
+  const cell = terminalCellWidth()
+  line.style.fontFamily = family
+  line.style.fontSize = `${size}px`
+  line.style.marginLeft = `${Math.max(0, terminalTextOrigin())}px`
+  if (cell < 4) {
+    line.textContent = text
+    return line
+  }
+  for (const character of text) {
+    const glyph = document.createElement('span')
+    const cells = Math.max(1, displayWidth(character))
+    glyph.textContent = character
+    glyph.style.width = `${cells * cell}px`
+    glyph.style.flex = `0 0 ${cells * cell}px`
+    line.append(glyph)
+  }
+  return line
+}
+
+function renderSemanticColumns(rendered: SemanticTableRender): void {
+  lastSemanticRender = rendered
+  semanticHeader.className = 'semantic-columns'
+  semanticHeader.replaceChildren(
+    paintAlignedLine(rendered.headerText, 'semantic-line'),
+    paintAlignedLine(rendered.legendText, 'semantic-line is-legend')
+  )
+  semanticLegend.hidden = true
+}
+
 function renderSemanticMetadata(
   columns: ColumnDef[],
   rows: Array<Record<string, string | number>>,
-  expanded: boolean
+  expanded: boolean,
+  rawOutput: string
 ): void {
-  const rendered = renderSemanticTable(columns, rows, expanded)
-  semanticHeader.textContent = rendered.headerText
-  semanticLegend.textContent = rendered.legendText
+  const rendered = renderSemanticTable(columns, rows, expanded, rawOutput)
+  renderSemanticColumns(rendered)
   semanticDetails.replaceChildren()
   for (const column of columns) {
     const item = document.createElement('p')
@@ -1088,6 +1393,7 @@ function relayoutTerminal(): void {
   requestAnimationFrame(() => {
     fitAddon.fit()
     resizeActiveTerminal()
+    if (lastSemanticRender) renderSemanticColumns(lastSemanticRender)
     terminal.scrollToBottom()
   })
 }
@@ -1120,37 +1426,62 @@ async function showStructuredMetadata(
     )
     if (session.id !== activeSessionId) return
     if (result.columns.length === 0) {
+      clearSemanticEntries()
       semanticBlock.hidden = true
       return
     }
-    renderSemanticMetadata(result.columns, result.rows, request.expanded)
+    renderSemanticMetadata(result.columns, result.rows, request.expanded, result.rawOutput)
   } catch (error) {
     if (session.id !== activeSessionId) return
+    clearSemanticEntries()
     semanticBlock.hidden = false
+    semanticHeader.className = 'semantic-header'
     semanticHeader.textContent = request.command
+    semanticLegend.hidden = false
     semanticLegend.textContent = error instanceof Error ? error.message : String(error)
     semanticDetails.hidden = true
   }
 }
 
+function isClearCommand(command: string): boolean {
+  return /^(?:clear|reset)(?:\s|$)/.test(command.trim())
+}
+
+function isScreenClear(data: string): boolean {
+  return /\u001b(?:\[(?:\d+;)*(?:2|3)J|c)/.test(data)
+}
+
+function revealPrompt(): void {
+  requestAnimationFrame(() => {
+    fitAddon.fit()
+    resizeActiveTerminal()
+    terminal.scrollToBottom()
+    terminal.focus()
+  })
+}
+
 async function showWorkspaceContext(command: string, relayout = true): Promise<void> {
   try {
     const context = await window.unixbridge.workspaceContext()
-    const pathParts = context.directory.split(/[\\/]/).filter(Boolean)
     contextRuntime.textContent = context.runtime
-    contextDirectory.textContent = `…/${pathParts.slice(-2).join('/')}`
-    contextDirectory.title = context.directory
+    showDirectoryChip(getActiveSession()?.currentDirectory || context.directory)
     contextBranch.textContent = context.branch ?? '无 Git 分支'
     contextChanges.textContent = `${context.changes} changes`
     contextCommand.textContent = command
     const becameVisible = terminalContext.hidden
     terminalContext.hidden = false
+    if (isClearCommand(command)) {
+      clearSemanticEntries()
+      semanticBlock.hidden = true
+      requestAnimationFrame(() => {
+        fitAddon.fit()
+        resizeActiveTerminal()
+        terminal.focus()
+      })
+      return
+    }
     if (!relayout || !becameVisible) return
-    requestAnimationFrame(() => {
-      fitAddon.fit()
-      resizeActiveTerminal()
-      terminal.scrollToBottom()
-    })
+    revealPrompt()
   } catch {
     const becameHidden = !terminalContext.hidden
     terminalContext.hidden = true
@@ -1162,12 +1493,79 @@ async function showWorkspaceContext(command: string, relayout = true): Promise<v
   }
 }
 
+let completionItems: CommandSuggestion[] = []
+let completionIndex = 0
+
+function hideCompletions(): void {
+  completionItems = []
+  completionIndex = 0
+  commandComplete.hidden = true
+  commandComplete.replaceChildren()
+}
+
+function renderCompletions(): void {
+  commandComplete.replaceChildren()
+  completionItems.forEach((item, index) => {
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.classList.toggle('is-active', index === completionIndex)
+    const command = document.createElement('strong')
+    command.textContent = item.command
+    const description = document.createElement('span')
+    description.textContent = item.description
+    button.append(command, description)
+    button.addEventListener('mousedown', (event) => {
+      event.preventDefault()
+      acceptCompletion(item.command)
+    })
+    commandComplete.append(button)
+  })
+  commandComplete.hidden = completionItems.length === 0
+  commandComplete.querySelector('.is-active')?.scrollIntoView({ block: 'nearest' })
+}
+
+function refreshCompletions(input: string): void {
+  completionItems = suggestCommands(input, commandHistory)
+  completionIndex = 0
+  renderCompletions()
+}
+
+function acceptCompletion(command: string): void {
+  const session = getActiveSession()
+  if (!session) return
+  const backspaces = '\u007f'.repeat(session.inputBuffer.length)
+  session.inputBuffer = command
+  window.unixbridge.write(session.id, `${backspaces}${command}`)
+  hideCompletions()
+  terminal.focus()
+}
+
 terminal.onData((data) => {
   const session = getActiveSession()
   if (!session) return
   if (data === '\u0007' && !semanticBlock.hidden) {
     toggleSemanticDetails()
     return
+  }
+  if ((data === '\u001b[A' || data === '\u001b[B') && completionItems.length > 0) {
+    completionIndex =
+      data === '\u001b[A'
+        ? (completionIndex - 1 + completionItems.length) % completionItems.length
+        : (completionIndex + 1) % completionItems.length
+    renderCompletions()
+    return
+  }
+  if (data === '\u001b' && completionItems.length > 0) {
+    hideCompletions()
+    return
+  }
+  if (data === '\t') {
+    if (completionItems.length === 0) refreshCompletions(session.inputBuffer)
+    const chosen = completionItems[completionIndex]
+    if (chosen) {
+      acceptCompletion(chosen.command)
+      return
+    }
   }
 
   let outbound = data
@@ -1198,6 +1596,8 @@ terminal.onData((data) => {
       session.inputBuffer += character
     }
   }
+  if (data === '\r' || data === '\n' || data === '\u0003') hideCompletions()
+  else if (!data.startsWith('\u001b')) refreshCompletions(session.inputBuffer)
   if (structured) void showStructuredMetadata(session, submittedCommand, structured)
 })
 
@@ -1207,14 +1607,53 @@ const resizeObserver = new ResizeObserver(() => {
   resizeFrame = requestAnimationFrame(() => {
     if (container.clientWidth === 0 || container.clientHeight === 0) return
     try {
-    fitAddon.fit()
+      fitAddon.fit()
       resizeActiveTerminal()
+      if (lastSemanticRender) renderSemanticColumns(lastSemanticRender)
     } catch {
       // The terminal can be temporarily hidden while filtering command history.
     }
   })
 })
 resizeObserver.observe(container)
+
+function scheduleSshReconnect(session: UiSession): boolean {
+  if (!session.ssh || session.disposed || session.reconnects >= 6) return false
+  session.reconnects += 1
+  const delay = Math.min(15_000, 1000 * 2 ** (session.reconnects - 1))
+  session.statusText = `SSH 断开，${Math.round(delay / 1000)} 秒后重连`
+  session.statusState = 'stopped'
+  session.platformLabel = session.statusText
+  if (session.reconnectTimer) window.clearTimeout(session.reconnectTimer)
+  session.reconnectTimer = window.setTimeout(() => {
+    void connectSession(session, true)
+  }, delay)
+  return true
+}
+
+function sshLabel(target: SshTarget): string {
+  return `ssh ${target.user ? `${target.user}@` : ''}${target.host}`
+}
+
+function persistedSessions(): Array<{
+  id: string
+  name: string
+  color: string
+  kind: 'local' | 'ssh'
+  ssh?: SshTarget
+}> {
+  return [...uiSessions.values()].map((session) => ({
+    id: session.id,
+    name: session.name,
+    color: session.color,
+    kind: session.ssh ? 'ssh' : 'local',
+    ...(session.ssh ? { ssh: session.ssh } : {})
+  }))
+}
+
+function rememberSessions(): void {
+  void window.unixbridge.saveSessions(persistedSessions()).catch(() => undefined)
+}
 
 function setConnectionState(
   session: UiSession,
@@ -1223,7 +1662,7 @@ function setConnectionState(
   shell: string
 ): void {
   session.platform = platform
-  const label = platform === 'win32' ? `${shell} · ConPTY` : shell
+  const label = session.ssh ? sshLabel(session.ssh) : platform === 'win32' ? `${shell} · ConPTY` : shell
   session.statusText = `${label} · PID ${pid}`
   session.statusState = 'running'
   session.platformLabel = `${label} · PID ${pid}`
@@ -1231,21 +1670,70 @@ function setConnectionState(
   if (session.id === activeSessionId) syncActiveSessionUi()
 }
 
-async function startSession(): Promise<void> {
+async function connectSession(session: UiSession, reconnect = false): Promise<void> {
+  if (session.disposed) return
+  session.statusText = session.ssh ? (reconnect ? '正在重连 SSH…' : '正在连接 SSH…') : '正在启动终端…'
+  session.statusState = ''
+  session.platformLabel = session.statusText
+  renderSessionList()
+  if (session.id === activeSessionId) syncActiveSessionUi()
+  try {
+    fitAddon.fit()
+    const started = session.ssh
+      ? await window.unixbridge.start(session.id, terminal.cols, terminal.rows, session.ssh)
+      : await window.unixbridge.start(session.id, terminal.cols, terminal.rows)
+    if (session.disposed) return
+    session.reconnects = 0
+    setConnectionState(session, started.platform, started.pid, started.shell)
+    if (session.id === activeSessionId) terminal.focus()
+    rememberSessions()
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error)
+    const output = `\x1b[31m[unixbridge] ${message}\x1b[0m\r\n`
+    session.statusText = '启动失败'
+    session.statusState = 'stopped'
+    session.platformLabel = '连接失败'
+    session.output = `${session.output}${output}`.slice(-1_000_000)
+    if (scheduleSshReconnect(session)) {
+      renderSessionList()
+      if (session.id === activeSessionId) syncActiveSessionUi()
+      return
+    }
+    renderSessionList()
+    if (session.id === activeSessionId) {
+      syncActiveSessionUi()
+      terminal.write(output)
+    }
+  }
+}
+
+async function startSession(options?: {
+  ssh?: SshTarget
+  id?: string
+  name?: string
+  color?: string
+}): Promise<void> {
   sessionSequence += 1
   const sessionId =
+    options?.id ??
     window.crypto.randomUUID?.() ??
     `${Date.now()}-${Math.random().toString(36).slice(2)}-${sessionSequence}`
+  const ssh = options?.ssh
   const session: UiSession = {
     id: sessionId,
-    name: sessionSequence === 1 ? appearance.sessionName : `终端 ${sessionSequence}`,
-    color: appearance.sessionColor,
+    name:
+      options?.name ??
+      (ssh ? sshLabel(ssh) : sessionSequence === 1 ? appearance.sessionName : `终端 ${sessionSequence}`),
+    color: options?.color ?? appearance.sessionColor,
     platform: null,
     platformLabel: '正在连接…',
-    statusText: '正在启动终端…',
+    statusText: ssh ? '正在连接 SSH…' : '正在启动终端…',
     statusState: '',
     output: '',
-    inputBuffer: ''
+    inputBuffer: '',
+    disposed: false,
+    reconnects: 0,
+    ...(ssh ? { ssh } : {})
   }
   uiSessions.set(sessionId, session)
   activeSessionId = sessionId
@@ -1255,28 +1743,22 @@ async function startSession(): Promise<void> {
   setSessionEditorOpen(false)
   renderSessionList()
   syncActiveSessionUi()
+  await connectSession(session)
+}
 
-  try {
-    fitAddon.fit()
-    const { platform, pid, shell } = await window.unixbridge.start(
-      sessionId,
-      terminal.cols,
-      terminal.rows
-    )
-    setConnectionState(session, platform, pid, shell)
-    terminal.focus()
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error)
-    const output = `\x1b[31m[unixbridge] ${message}\x1b[0m\r\n`
-    session.statusText = '启动失败'
-    session.statusState = 'stopped'
-    session.platformLabel = '连接失败'
-    session.output = output
-    renderSessionList()
-    if (session.id === activeSessionId) {
-      syncActiveSessionUi()
-      terminal.write(output)
-    }
+async function restoreSessions(): Promise<void> {
+  const stored = await window.unixbridge.loadSessions().catch(() => [])
+  if (stored.length === 0) {
+    await startSession()
+    return
+  }
+  for (const item of stored) {
+    await startSession({
+      id: item.id,
+      name: item.name,
+      color: item.color,
+      ...(item.ssh ? { ssh: item.ssh } : {})
+    })
   }
 }
 
@@ -1329,8 +1811,10 @@ commandSearch.addEventListener('keydown', (event) => {
 element<HTMLElement>('#new-session').addEventListener('click', () => void startSession())
 element<HTMLElement>('#clear-terminal').addEventListener('click', () => {
   const session = getActiveSession()
-  if (session) session.output = ''
-  terminal.clear()
+  if (!session) return
+  clearSemanticEntries()
+  semanticBlock.hidden = true
+  window.unixbridge.write(session.id, 'clear\r')
   terminal.focus()
 })
 settingsButton.addEventListener('click', (event) => {
@@ -1351,6 +1835,7 @@ sessionNameInput.addEventListener('input', () => {
   session.name = sessionNameInput.value.trim() || '未命名会话'
   appearance.sessionName = session.name
   saveAndApplyAppearance()
+  rememberSessions()
 })
 sessionNameInput.addEventListener('blur', () => {
   if (sessionNameInput.value.trim()) return
@@ -1367,13 +1852,25 @@ for (const button of document.querySelectorAll<HTMLButtonElement>('.color-option
     session.color = button.dataset.color ?? defaultSettings.sessionColor
     appearance.sessionColor = session.color
     saveAndApplyAppearance()
+    rememberSessions()
   })
 }
 document.addEventListener('click', () => {
   if (settingsResizeClickPending) return
   setSettingsOpen(false)
   setSessionEditorOpen(false)
+  sshForm.hidden = true
+  closeDirectoryBrowser()
 })
+contextDirectory.addEventListener('click', (event) => {
+  event.stopPropagation()
+  if (!directoryBrowser.hidden) {
+    closeDirectoryBrowser()
+    return
+  }
+  void openDirectoryBrowser(contextDirectory.dataset.path || currentFilePath)
+})
+directoryBrowser.addEventListener('click', (event) => event.stopPropagation())
 element<HTMLElement>('#sidebar-toggle').addEventListener('click', () => {
   document.body.classList.toggle('sidebar-collapsed')
   requestAnimationFrame(() => {
@@ -1404,8 +1901,45 @@ window.addEventListener('beforeunload', () => {
 })
 
 syncAiSettings()
+void window.unixbridge.loadAi().then((saved) => {
+  if (!saved) return
+  aiPreferences.provider = saved.provider
+  aiPreferences.endpoint = saved.endpoint
+  aiPreferences.model = saved.model
+  if (saved.apiKey) aiApiKeyInput.value = saved.apiKey
+  localStorage.setItem('unixbridge:ai-preferences', JSON.stringify(aiPreferences))
+  syncAiSettings()
+  aiConfigStatus.textContent = saved.apiKey ? '已恢复本机保存的 API Key' : 'AI 已就绪'
+}).catch((error: unknown) => {
+  aiConfigStatus.textContent = error instanceof Error ? error.message : String(error)
+})
 saveAndApplyAppearance()
 const metricsTimer = window.setInterval(() => void refreshMetrics(), 2_000)
 void refreshMetrics()
+element<HTMLButtonElement>('#preview-close').addEventListener('click', () => closePreview())
+element<HTMLButtonElement>('#preview-insert').addEventListener('click', () => {
+  if (!previewPath) return
+  insertTerminalText(`${quoteDirectory(previewPath, getActiveSession()?.platform ?? null)} `)
+})
+element<HTMLButtonElement>('#new-ssh').addEventListener('click', (event) => {
+  event.stopPropagation()
+  sshForm.hidden = !sshForm.hidden
+  if (!sshForm.hidden) sshTargetInput.focus()
+})
+sshForm.addEventListener('click', (event) => event.stopPropagation())
+sshForm.addEventListener('submit', (event) => {
+  event.preventDefault()
+  const hint = sshForm.querySelector('small')
+  const target = parseSshTarget(sshTargetInput.value)
+  if (!target) {
+    if (hint) hint.textContent = '请输入 user@host，或 user@host:端口'
+    return
+  }
+  if (hint) hint.textContent = '断线后自动重连，远端有 tmux 时会话会保留。'
+  sshForm.hidden = true
+  sshTargetInput.value = ''
+  void startSession({ ssh: target })
+})
+
 void loadFiles()
-void startSession()
+void restoreSessions()

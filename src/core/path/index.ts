@@ -1,5 +1,18 @@
 import { readdir } from 'node:fs/promises'
+import { homedir } from 'node:os'
 import path from 'node:path'
+
+export function resolveHomePath(requested?: string): string {
+  const home = path.resolve(homedir())
+  const target = path.resolve(
+    requested && path.isAbsolute(requested) ? requested : path.join(home, requested ?? '')
+  )
+  const relation = path.relative(home, target)
+  if (relation.startsWith('..') || path.isAbsolute(relation)) {
+    throw new Error('文件浏览仅允许访问当前用户目录')
+  }
+  return target
+}
 
 export interface NormalizePathOptions {
   cwd: string

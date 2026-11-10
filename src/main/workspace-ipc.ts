@@ -1,11 +1,15 @@
-import { ipcMain, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron'
+import { app, ipcMain, safeStorage, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron'
 import { execFile } from 'node:child_process'
-import { readdir, stat } from 'node:fs/promises'
-import { cpus, freemem, homedir, totalmem } from 'node:os'
-import { isAbsolute, join, relative, resolve } from 'node:path'
+import { readFile, readdir, stat, writeFile } from 'node:fs/promises'
+import { cpus, freemem, totalmem } from 'node:os'
+import { homedir } from 'node:os'
+import { basename, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import { executeStructuredCommand } from '../core/commands'
+import { resolveHomePath } from '../core/path'
+import { previewKind, previewUrl, type PreviewKind } from '../core/preview/kind'
 import { currentPlatform, resolveStructured } from '../core/structured'
+import { parseSshTarget, type SshTarget } from '../core/ssh/target'
 
 const execFileAsync = promisify(execFile)
 
@@ -27,6 +31,57 @@ interface CpuSnapshot {
 }
 
 const aiConfigs = new Map<number, AiConfig>()
+let persistedAi: AiConfig | null = null
+
+function aiConfigFile(): string {
+  return join(app.getPath('userData'), 'ai-config.json')
+}
+
+function sealSecret(value: string): string {
+  const buffer = safeStorage.isEncryptionAvailable()
+    ? safeStorage.encryptString(value)
+    : Buffer.from(value, 'utf8')
+  return buffer.toString('base64')
+}
+
+function openSecret(value: string, sealed: boolean): string {
+  const buffer = Buffer.from(value, 'base64')
+  if (sealed && safeStorage.isEncryptionAvailable()) return safeStorage.decryptString(buffer)
+  return buffer.toString('utf8')
+}
+
+async function readPersistedAi(): Promise<AiConfig | null> {
+  try {
+    const raw = JSON.parse(await readFile(aiConfigFile(), 'utf8')) as {
+      provider?: string
+      endpoint?: string
+      model?: string
+      apiKey?: string
+      sealed?: boolean
+    }
+    if (raw.provider !== 'local' && raw.provider !== 'api') return null
+    const endpoint = normalizeEndpoint(String(raw.endpoint ?? ''))
+    const model = String(raw.model ?? '').trim()
+    if (!model) return null
+    const apiKey = raw.apiKey ? openSecret(raw.apiKey, raw.sealed === true) : undefined
+    return { provider: raw.provider, endpoint, model, ...(apiKey ? { apiKey } : {}) }
+  } catch {
+    return null
+  }
+}
+
+async function writePersistedAi(config: AiConfig): Promise<void> {
+  await writeFile(
+    aiConfigFile(),
+    JSON.stringify({
+      provider: config.provider,
+      endpoint: config.endpoint,
+      model: config.model,
+      sealed: Boolean(config.apiKey) && safeStorage.isEncryptionAvailable(),
+      ...(config.apiKey ? { apiKey: sealSecret(config.apiKey) } : {})
+    })
+  )
+}
 const cpuSnapshots = new Map<number, CpuSnapshot>()
 
 function normalizeEndpoint(endpoint: string): string {
@@ -80,31 +135,69 @@ async function readGpuUsage(): Promise<{ name: string; usage: number } | null> {
   }
 }
 
-function resolveSafePath(requested?: string): string {
-  const home = resolve(homedir())
-  const target = resolve(requested && isAbsolute(requested) ? requested : join(home, requested ?? ''))
-  const relation = relative(home, target)
-  if (relation.startsWith('..') || isAbsolute(relation)) {
-    throw new Error('文件浏览仅允许访问当前用户目录')
+const TEXT_PREVIEW_LIMIT = 512 * 1024
+
+export interface StoredSession {
+  id: string
+  name: string
+  color: string
+  kind: 'local' | 'ssh'
+  ssh?: SshTarget
+}
+
+export function sanitizeStoredSessions(input: unknown): StoredSession[] {
+  if (!Array.isArray(input)) return []
+  const sessions: StoredSession[] = []
+  for (const item of input.slice(0, 20)) {
+    if (!item || typeof item !== 'object') continue
+    const record = item as Partial<StoredSession>
+    const id = String(record.id ?? '')
+    if (!/^[a-zA-Z0-9-]{8,80}$/.test(id)) continue
+    const name = String(record.name ?? '').trim().slice(0, 30) || '未命名会话'
+    const color = /^#[0-9a-fA-F]{6}$/.test(String(record.color ?? '')) ? String(record.color) : '#73b7c8'
+    if (record.kind === 'ssh') {
+      const ssh = parseSshTarget(
+        `${record.ssh?.user ? `${record.ssh.user}@` : ''}${record.ssh?.host ?? ''}${
+          record.ssh?.port && record.ssh.port !== 22 ? `:${record.ssh.port}` : ''
+        }`
+      )
+      if (!ssh) continue
+      sessions.push({ id, name, color, kind: 'ssh', ssh })
+      continue
+    }
+    sessions.push({ id, name, color, kind: 'local' })
   }
-  return target
+  return sessions
 }
 
 export function registerWorkspaceIpc(
   isTrustedSender: (event: IpcMainEvent | IpcMainInvokeEvent) => boolean
 ): void {
-  ipcMain.handle('ai:configure', (event, config: AiConfig) => {
+  ipcMain.handle('ai:load', async (event) => {
+    if (!isTrustedSender(event)) throw new Error('拒绝不受信任的 AI 配置请求')
+    persistedAi ??= await readPersistedAi()
+    if (!persistedAi) return null
+    aiConfigs.set(event.sender.id, { ...persistedAi })
+    return persistedAi
+  })
+
+  ipcMain.handle('ai:configure', async (event, config: AiConfig) => {
     if (!isTrustedSender(event)) throw new Error('拒绝不受信任的 AI 配置请求')
     if (!config || !['local', 'api'].includes(config.provider)) throw new Error('无效的 AI 模式')
     const endpoint = normalizeEndpoint(String(config.endpoint ?? ''))
     const model = String(config.model ?? '').trim()
     if (!model) throw new Error('请填写 AI 模型名称')
-    aiConfigs.set(event.sender.id, {
+    persistedAi ??= await readPersistedAi()
+    const apiKey = config.apiKey !== undefined ? String(config.apiKey).trim() : persistedAi?.apiKey ?? ''
+    const next: AiConfig = {
       provider: config.provider,
       endpoint,
       model,
-      ...(config.apiKey ? { apiKey: String(config.apiKey) } : {})
-    })
+      ...(apiKey ? { apiKey } : {})
+    }
+    persistedAi = next
+    aiConfigs.set(event.sender.id, next)
+    await writePersistedAi(next)
     return { configured: true }
   })
 
@@ -251,7 +344,7 @@ export function registerWorkspaceIpc(
 
   ipcMain.handle('files:list', async (event, requested?: string) => {
     if (!isTrustedSender(event)) throw new Error('拒绝不受信任的文件请求')
-    const directory = resolveSafePath(requested)
+    const directory = resolveHomePath(requested)
     const directoryStat = await stat(directory)
     if (!directoryStat.isDirectory()) throw new Error('目标不是目录')
     const entries = await readdir(directory, { withFileTypes: true })
@@ -280,6 +373,27 @@ export function registerWorkspaceIpc(
     }
   })
 
+  ipcMain.handle('files:preview', async (event, requested?: string) => {
+    if (!isTrustedSender(event)) throw new Error('拒绝不受信任的文件请求')
+    const filePath = resolveHomePath(requested)
+    const details = await stat(filePath)
+    if (!details.isFile()) throw new Error('只能预览文件')
+    const name = basename(filePath)
+    const kind: PreviewKind = previewKind(name)
+    if (kind === 'none') return { path: filePath, name, kind, message: '这个类型暂不能在面板里预览' }
+    if (kind === 'image' || kind === 'video' || kind === 'pdf') {
+      if (details.size > 20 * 1024 * 1024) {
+        return { path: filePath, name, kind, message: '文件超过 20MB，无法在面板中预览' }
+      }
+      return { path: filePath, name, kind, url: previewUrl(filePath) }
+    }
+    if (details.size > TEXT_PREVIEW_LIMIT) {
+      return { path: filePath, name, kind, message: '文本超过 512KB，无法在面板中完整预览' }
+    }
+    const text = await readFile(filePath, 'utf8')
+    return { path: filePath, name, kind, text }
+  })
+
   ipcMain.handle(
     'commands:structured',
     async (
@@ -294,7 +408,7 @@ export function registerWorkspaceIpc(
       if (!resolveStructured(command, args, currentPlatform())) {
         throw new Error('不支持的结构化命令')
       }
-      const cwd = resolveSafePath(request?.cwd)
+      const cwd = resolveHomePath(request?.cwd)
       return executeStructuredCommand(command, args, cwd)
     }
   )

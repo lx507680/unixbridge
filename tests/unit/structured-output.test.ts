@@ -54,6 +54,21 @@ describe('dynamic structured output', () => {
     expect(rendered.text).toContain('my link.txt -> /etc/hosts')
   })
 
+  it('keeps macOS Chinese dates and symlink names intact', () => {
+    const parser = createLsParser()
+    const rows = parser.parse(
+      [
+        'total 16',
+        'drwxr-x---+ 143 luoxian  staff  4576 11月 10 09:33 .',
+        'drwxr-xr-x@   6 luoxian  staff   192  3月 31  2026 .ai_completion',
+        'lrwxr-xr-x@   1 luoxian  wheel    10  9月 12 23:45 my link.txt -> /etc/hosts'
+      ].join('\n')
+    )
+    expect(rows.map((row) => row.mtime)).toEqual(['11月 10 09:33', '3月 31  2026', '9月 12 23:45'])
+    expect(rows[2]?.name).toBe('my link.txt -> /etc/hosts')
+    expect(parser.columns().map((column) => column.key)).toContain('mtime')
+  })
+
   it('derives only the name column from non-long ls output', () => {
     const parser = createLsParser()
     parser.parse('my report.txt\njava_error_in_idea.hprof\n')

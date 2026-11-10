@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws:"
+            content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: unixbridge:; media-src 'self' unixbridge:; frame-src unixbridge:; connect-src 'self' ws:"
     />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>unixbridge</title>
@@ -37,7 +37,13 @@
             title="布局与显示设置"
           >☷</button>
           <button id="new-session" class="icon-button tool-button add-button" type="button" aria-label="新建终端会话" title="新建终端会话">＋</button>
+          <button id="new-ssh" class="icon-button tool-button" type="button" aria-label="新建 SSH 会话" title="新建可重连的 SSH 会话">SSH</button>
         </div>
+        <form id="ssh-form" class="ssh-form" hidden>
+          <input id="ssh-target" type="text" placeholder="user@host 或 user@host:22" autocomplete="off" spellcheck="false" />
+          <button type="submit">连接</button>
+          <small>断线后自动重连，远端有 tmux 时会话会保留。</small>
+        </form>
         <div id="command-search-results" class="command-search-results" aria-live="polite" hidden></div>
 
         <nav class="sidebar-module-nav" aria-label="工作区模块">
@@ -84,6 +90,7 @@
               <button type="button" data-value="terminal">终端优先</button>
               <button type="button" data-value="assistant">AI 优先</button>
             </div>
+            <small id="layout-status">均衡：按下方开关显示 AI 和右侧面板。</small>
           </div>
           <fieldset class="settings-group option-list" data-setting="panels">
             <legend>显示面板</legend>
@@ -124,7 +131,7 @@
             <label>模型<input id="ai-model" type="text" value="qwen2.5-coder:7b" /></label>
             <label id="ai-key-label" hidden>API Key<input id="ai-api-key" type="password" autocomplete="off" /></label>
             <button id="save-ai-config" class="settings-primary" type="button">保存 AI 配置</button>
-            <small id="ai-config-status">密钥仅保存在本次应用进程内</small>
+            <small id="ai-config-status">密钥加密保存在本机，重新打开后仍然可用</small>
           </div>
           <div class="settings-group">
             <span class="settings-label">主题</span>
@@ -202,23 +209,39 @@
           <section class="terminal-column">
             <div id="terminal-context" class="terminal-context" hidden>
               <span class="context-chip" id="context-runtime">Node --</span>
-              <span class="context-chip" id="context-directory">~</span>
+              <button type="button" class="context-chip context-directory" id="context-directory" title="查看此目录中的文件夹">~</button>
               <span class="context-chip" id="context-branch">无 Git 分支</span>
               <span class="context-chip" id="context-changes">0 changes</span>
               <code id="context-command"></code>
+            </div>
+            <div id="directory-browser" class="directory-browser" hidden>
+              <div id="directory-browser-path" class="directory-browser-path"></div>
+              <div id="directory-browser-list" class="directory-browser-list"></div>
             </div>
             <section id="blocks" class="blocks" aria-label="命令工作区">
               <section id="semantic-block" class="semantic-block" hidden>
                 <div class="semantic-metadata">
                   <div class="semantic-heading">
-                    <pre id="semantic-header" class="semantic-header"></pre>
                     <button id="semantic-toggle" type="button" aria-expanded="false" aria-controls="semantic-details">列说明</button>
                   </div>
-                  <p id="semantic-legend" class="semantic-legend"></p>
+                  <div id="semantic-header" class="semantic-columns"></div>
+                  <p id="semantic-legend" class="semantic-legend" hidden></p>
                   <div id="semantic-details" class="semantic-details" hidden></div>
                 </div>
               </section>
-              <section id="terminal" class="terminal-block" aria-label="终端输出"></section>
+              <section id="preview-block" class="preview-block" hidden>
+                <header class="preview-header">
+                  <strong id="preview-title">文件预览</strong>
+                  <div class="preview-actions">
+                    <button id="preview-insert" type="button">插入路径</button>
+                    <button id="preview-close" type="button" aria-label="关闭预览">关闭</button>
+                  </div>
+                </header>
+                <div id="preview-body" class="preview-body"></div>
+              </section>
+              <section id="terminal" class="terminal-block" aria-label="终端输出">
+                <div id="command-complete" class="command-complete" hidden></div>
+              </section>
             </section>
           </section>
 

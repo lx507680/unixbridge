@@ -1,8 +1,21 @@
-import { app, BrowserWindow, ipcMain, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron'
-import { existsSync } from 'node:fs'
+import { app, BrowserWindow, ipcMain, protocol, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron'
+import { createReadStream, existsSync } from 'node:fs'
+import { readFile, stat, writeFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
+import { Readable } from 'node:stream'
 import * as pty from 'node-pty'
-import { registerWorkspaceIpc } from './workspace-ipc'
+import { localeEnv } from '../core/locale'
+import { resolveHomePath } from '../core/path'
+import { previewMime } from '../core/preview/kind'
+import { sshLaunchArguments, type SshTarget } from '../core/ssh/target'
+import { registerWorkspaceIpc, sanitizeStoredSessions, type StoredSession } from './workspace-ipc'
+
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: 'unixbridge',
+    privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, corsEnabled: true }
+  }
+])
 
 interface PtySession {
   ownerId: number
@@ -38,13 +51,44 @@ function shellName(shellPath: string): string {
   return name || 'shell'
 }
 
-function spawnShell(cols: number, rows: number): { terminal: pty.IPty; shell: string } {
+function sessionsFile(): string {
+  return join(app.getPath('userData'), 'sessions.json')
+}
+
+async function loadStoredSessions(): Promise<StoredSession[]> {
+  try {
+    return sanitizeStoredSessions(JSON.parse(await readFile(sessionsFile(), 'utf8')))
+  } catch {
+    return []
+  }
+}
+
+async function saveStoredSessions(input: unknown): Promise<StoredSession[]> {
+  const sessions = sanitizeStoredSessions(input)
+  await writeFile(sessionsFile(), JSON.stringify(sessions))
+  return sessions
+}
+
+function spawnShell(
+  cols: number,
+  rows: number,
+  ssh?: SshTarget,
+  sessionId = ''
+): { terminal: pty.IPty; shell: string } {
   const options: pty.IPtyForkOptions = {
     name: 'xterm-256color',
     cols,
     rows,
     cwd: process.env.USERPROFILE ?? process.env.HOME ?? process.cwd(),
-    env: { ...process.env, TERM: 'xterm-256color' } as Record<string, string>
+    env: { ...localeEnv(), TERM: 'xterm-256color' } as Record<string, string>
+  }
+
+  if (ssh) {
+    const command = process.platform === 'win32' ? 'ssh.exe' : 'ssh'
+    return {
+      terminal: pty.spawn(command, sshLaunchArguments(ssh, sessionId), options),
+      shell: 'ssh'
+    }
   }
 
   if (process.platform !== 'win32') {
@@ -87,7 +131,7 @@ function disposeOwnerSessions(ownerId: number): void {
 function registerPtyIpc(): void {
   ipcMain.handle(
     'pty:start',
-    (event, request: { sessionId: string; cols: number; rows: number }) => {
+    (event, request: { sessionId: string; cols: number; rows: number; ssh?: SshTarget }) => {
     if (!isTrustedSender(event)) throw new Error('拒绝不受信任的 PTY 请求')
       const sessionId = String(request.sessionId ?? '')
       if (!/^[a-zA-Z0-9-]{8,80}$/.test(sessionId)) throw new Error('无效的终端会话标识')
@@ -100,14 +144,16 @@ function registerPtyIpc(): void {
 
       const cols = Math.max(2, Math.floor(request.cols))
       const rows = Math.max(1, Math.floor(request.rows))
-      const { terminal, shell } = spawnShell(cols, rows)
+      if (request.ssh) sshLaunchArguments(request.ssh, sessionId)
+      const { terminal, shell } = spawnShell(cols, rows, request.ssh, sessionId)
       sessions.set(sessionId, { ownerId: event.sender.id, terminal })
 
       terminal.onData((data) => {
         if (!event.sender.isDestroyed()) event.sender.send('pty:data', { sessionId, data })
       })
       terminal.onExit(({ exitCode }) => {
-        if (sessions.get(sessionId)?.terminal === terminal) sessions.delete(sessionId)
+        if (sessions.get(sessionId)?.terminal !== terminal) return
+        sessions.delete(sessionId)
         if (!event.sender.isDestroyed()) event.sender.send('pty:exit', { sessionId, exitCode })
       })
 
@@ -165,8 +211,39 @@ function createWindow(): void {
   }
 }
 
+function registerPreviewProtocol(): void {
+  protocol.handle('unixbridge', async (request) => {
+    const url = new URL(request.url)
+    if (url.hostname !== 'preview') return new Response('not found', { status: 404 })
+    try {
+      const filePath = resolveHomePath(url.searchParams.get('path') ?? '')
+      const details = await stat(filePath)
+      if (!details.isFile() || details.size > 20 * 1024 * 1024) {
+        return new Response('unsupported', { status: 415 })
+      }
+      const stream = Readable.toWeb(createReadStream(filePath)) as ReadableStream
+      return new Response(stream, { headers: { 'content-type': previewMime(filePath) } })
+    } catch {
+      return new Response('forbidden', { status: 403 })
+    }
+  })
+}
+
+function registerSessionIpc(): void {
+  ipcMain.handle('sessions:load', async (event) => {
+    if (!isTrustedSender(event)) throw new Error('拒绝不受信任的会话请求')
+    return loadStoredSessions()
+  })
+  ipcMain.handle('sessions:save', async (event, input: unknown) => {
+    if (!isTrustedSender(event)) throw new Error('拒绝不受信任的会话请求')
+    return saveStoredSessions(input)
+  })
+}
+
 app.whenReady().then(() => {
+  registerPreviewProtocol()
   registerPtyIpc()
+  registerSessionIpc()
   registerWorkspaceIpc(isTrustedSender)
   createWindow()
   app.on('activate', () => {

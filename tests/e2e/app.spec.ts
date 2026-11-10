@@ -152,7 +152,21 @@ test('opens the Warp-like workspace and runs a command', async () => {
     await window.locator('[data-setting="density"] [data-value="comfortable"]').click()
     await window.locator('[data-setting="layout"] [data-value="terminal"]').click()
     await expect(window.locator('body')).toHaveAttribute('data-layout', 'terminal')
+    await expect(window.locator('#ai-panel')).toBeHidden()
+    await expect(window.locator('#widgets-panel')).toBeHidden()
+    await expect(window.locator('#layout-status')).toContainText('终端占满工作区')
+    const terminalFirstWidth = (await window.locator('.terminal-column').boundingBox())?.width ?? 0
+    await window.locator('[data-setting="layout"] [data-value="assistant"]').click()
+    await expect(window.locator('#ai-panel')).toBeVisible()
+    await expect
+      .poll(async () => (await window.locator('#ai-panel').boundingBox())?.width ?? 0)
+      .toBeGreaterThan(360)
+    expect((await window.locator('.terminal-column').boundingBox())?.width ?? 0).toBeLessThan(
+      terminalFirstWidth
+    )
     await window.locator('[data-setting="layout"] [data-value="balanced"]').click()
+    await expect(window.locator('#ai-panel')).toBeVisible()
+    await expect(window.locator('#layout-status')).toContainText('均衡')
     await window.locator('#font-size').fill('16')
     await expect(window.locator('#font-size-value')).toHaveText('16px')
     await window.locator('#font-family').selectOption('JetBrains Mono')
@@ -243,7 +257,7 @@ test('opens the Warp-like workspace and runs a command', async () => {
     await window.keyboard.type(`ls -la ${semanticTarget}`)
     await window.keyboard.press('Enter')
     await expect(window.locator('#semantic-header')).toContainText('权限')
-    await expect(window.locator('#semantic-legend')).toContainText('mode: 类型与权限')
+    await expect(window.locator('#semantic-header')).toContainText('类型与权限')
     await expect(window.locator('.xterm-rows')).not.toContainText('mode: 类型与权限')
     await expect(window.locator('.xterm-rows')).toContainText('package.json')
     await window.keyboard.press('Control+g')

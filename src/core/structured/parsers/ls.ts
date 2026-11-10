@@ -2,7 +2,7 @@ import type { ColumnDef } from '../../commands/types'
 import { columnsFor, outputLines, type CommandParser, type StructuredPlatform } from '../types'
 
 const LONG_LINE =
-  /^(?<mode>[-dlcbps][-rwxXsStT]{9}[@+.]*)\s+(?<links>\d+)\s+(?<owner>\S+)\s+(?<group>\S+)\s+(?<size>(?:\d+,\s*)?\d+[KMGTPE]?(?:[iB])?)\s+(?<mtime>(?:\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2})|(?:\d{1,2}月\s*\d{1,2}日\s+\d{2}:\d{2})|(?:[A-Z][a-z]{2}\s+\d{1,2}\s+(?:\d{2}:\d{2}|\d{4})))\s+(?<name>.+)$/
+  /^(?<mode>[-dlcbps][-rwxXsStT]{9}[@+.]*)\s+(?<links>\d+)\s+(?<owner>\S+)\s+(?<group>\S+)\s+(?<size>(?:\d+,\s*)?\d+[KMGTPE]?(?:[iB])?)\s+(?<mtime>(?:\d{1,2}月\s+\d{1,2}\s+(?:\d{2}:\d{2}|\d{4}))|(?:\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2})|(?:\d{1,2}月\s*\d{1,2}日\s+\d{2}:\d{2})|(?:[A-Z][a-z]{2}\s+\d{1,2}\s+(?:\d{2}:\d{2}|\d{4})))\s+(?<name>.+)$/
 
 const FIELD_ORDER = ['mode', 'links', 'owner', 'group', 'size', 'mtime', 'name'] as const
 

@@ -13,8 +13,15 @@ export function displayWidth(value: string): number {
   return stringWidth(value)
 }
 
-function padCell(value: string, width: number): string {
-  return `${value}${' '.repeat(Math.max(0, width - displayWidth(value)))}`
+export interface OutputColumnLayout {
+  key: string
+  header: string
+  description: string
+  align: 'start' | 'end'
+  start: number
+  width: number
+  contentWidth: number
+  trailing: number
 }
 
 export interface SemanticTableRender {
@@ -22,31 +29,185 @@ export interface SemanticTableRender {
   legendText: string
   text: string
   details: string
+  layout: OutputColumnLayout[]
+}
+
+function columnAlign(column: ColumnDef): 'start' | 'end' {
+  return column.type === 'numeric' || column.type === 'date' ? 'end' : 'start'
+}
+
+function clipToWidth(value: string, width: number): string {
+  if (width <= 0) return ''
+  if (displayWidth(value) <= width) return value
+  const ellipsis = '…'
+  const ellipsisWidth = displayWidth(ellipsis)
+  const limit = width > ellipsisWidth ? width - ellipsisWidth : width
+  let used = 0
+  let output = ''
+  for (const character of value) {
+    const characterWidth = displayWidth(character)
+    if (used + characterWidth > limit) break
+    output += character
+    used += characterWidth
+  }
+  return width > ellipsisWidth ? `${output}${ellipsis}` : output
+}
+
+function fitCell(value: string, width: number, align: 'start' | 'end'): string {
+  const clipped = clipToWidth(value, width)
+  const gap = ' '.repeat(Math.max(0, width - displayWidth(clipped)))
+  return align === 'end' ? `${gap}${clipped}` : `${clipped}${gap}`
+}
+
+function locateCells(
+  line: string,
+  cells: readonly string[]
+): Array<{ start: number; end: number }> | undefined {
+  let cursor = 0
+  const spans: Array<{ start: number; end: number }> = []
+  for (const cell of cells) {
+    const index = line.indexOf(cell, cursor)
+    if (index < 0) return undefined
+    const start = displayWidth(line.slice(0, index))
+    spans.push({ start, end: start + displayWidth(cell) })
+    cursor = index + cell.length
+  }
+  return spans
+}
+
+function measureOutputColumns(
+  columns: readonly ColumnDef[],
+  rows: readonly SemanticRow[],
+  rawOutput: string
+): OutputColumnLayout[] | undefined {
+  const lines = rawOutput.split(/\r?\n/).map((line) => line.trimEnd()).filter((line) => line.length > 0)
+  const starts = columns.map(() => [] as number[])
+  const ends = columns.map(() => [] as number[])
+  let lineCursor = 0
+  let matched = 0
+  for (const row of rows) {
+    const cells = columns.map((column) => String(row[column.key] ?? ''))
+    if (cells.some((cell) => cell.length === 0)) continue
+    while (lineCursor < lines.length) {
+      const line = lines[lineCursor] ?? ''
+      lineCursor += 1
+      const spans = locateCells(line, cells)
+      if (!spans) continue
+      spans.forEach((span, index) => {
+        starts[index]?.push(span.start)
+        ends[index]?.push(span.end)
+      })
+      matched += 1
+      break
+    }
+  }
+  if (matched === 0) return undefined
+
+  return columns.map((column, index) => {
+    const columnStarts = starts[index] ?? []
+    const columnEnds = ends[index] ?? []
+    const start = Math.min(...columnStarts)
+    const end = Math.max(...columnEnds)
+    const nextStarts = starts[index + 1]
+    const nextStart = nextStarts && nextStarts.length > 0 ? Math.min(...nextStarts) : undefined
+    const slot = nextStart === undefined
+      ? Math.max(end - start, displayWidth(column.header), 1)
+      : Math.max(1, nextStart - start)
+    const contentWidth = Math.min(slot, Math.max(1, end - start))
+    return {
+      key: column.key,
+      header: column.header,
+      description: column.description,
+      align: columnAlign(column),
+      start,
+      width: slot,
+      contentWidth,
+      trailing: slot - contentWidth
+    }
+  })
+}
+
+function fallbackLayout(
+  columns: readonly ColumnDef[],
+  rows: readonly SemanticRow[]
+): OutputColumnLayout[] {
+  const values = rows.map((row) => columns.map((column) => String(row[column.key] ?? '')))
+  let start = 0
+  return columns.map((column, index) => {
+    const contentWidth = Math.max(
+      displayWidth(column.header),
+      ...values.map((row) => displayWidth(row[index] ?? ''))
+    )
+    const trailing = index === columns.length - 1 ? 0 : 1
+    const layout: OutputColumnLayout = {
+      key: column.key,
+      header: column.header,
+      description: column.description,
+      align: columnAlign(column),
+      start,
+      width: contentWidth + trailing,
+      contentWidth,
+      trailing
+    }
+    start += layout.width
+    return layout
+  })
+}
+
+export function layoutColumns(
+  columns: readonly ColumnDef[],
+  rows: readonly SemanticRow[],
+  rawOutput = ''
+): OutputColumnLayout[] {
+  return measureOutputColumns(columns, rows, rawOutput) ?? fallbackLayout(columns, rows)
+}
+
+function renderAlignedLine(layout: readonly OutputColumnLayout[], field: 'header' | 'description'): string {
+  let line = ''
+  let cursor = 0
+  for (const column of layout) {
+    const gap = column.start - cursor
+    if (gap > 0) line += ' '.repeat(gap)
+    const source = field === 'header' ? column.header : column.description
+    const align = field === 'description' ? 'start' : column.align
+    const fitted = fitCell(source, column.contentWidth, align)
+    const spacer = ' '.repeat(column.trailing)
+    line += `${fitted}${spacer}`
+    cursor = column.start + displayWidth(fitted) + column.trailing
+  }
+  return line.trimEnd()
+}
+
+function renderDataLine(layout: readonly OutputColumnLayout[], cells: readonly string[]): string {
+  let line = ''
+  let cursor = 0
+  for (const [index, column] of layout.entries()) {
+    const gap = column.start - cursor
+    if (gap > 0) line += ' '.repeat(gap)
+    const fitted = fitCell(cells[index] ?? '', column.contentWidth, column.align)
+    line += `${fitted}${' '.repeat(column.trailing)}`
+    cursor = column.start + displayWidth(fitted) + column.trailing
+  }
+  return line.trimEnd()
 }
 
 export function renderSemanticTable(
   columns: readonly ColumnDef[],
   rows: readonly SemanticRow[],
-  expanded = false
+  expanded = false,
+  rawOutput = ''
 ): SemanticTableRender {
-  const values = rows.map((row) =>
-    columns.map((column) => String(row[column.key] ?? ''))
+  const layout = layoutColumns(columns, rows, rawOutput)
+  const headerText = renderAlignedLine(layout, 'header')
+  const legendText = renderAlignedLine(layout, 'description')
+  const data = rows.map((row) =>
+    renderDataLine(layout, columns.map((column) => String(row[column.key] ?? '')))
   )
-  const widths = columns.map((column, columnIndex) =>
-    Math.max(
-      displayWidth(column.header),
-      ...values.map((row) => displayWidth(row[columnIndex] ?? ''))
-    )
-  )
-  const line = (cells: readonly string[]): string =>
-    cells.map((cell, index) => padCell(cell, (widths[index] ?? 0) + 2)).join('').trimEnd()
-  const headerText = line(columns.map((column) => column.header))
-  const legendText = columns.map((column) => `${column.key}: ${column.description}`).join(' · ')
-  const data = values.map(line)
   const details = renderSemanticDetails(columns)
   return {
     headerText,
     legendText,
+    layout,
     text: [
       `${ANSI_HEADER}${headerText}${ANSI_RESET}`,
       `${ANSI_DIM}${legendText}${ANSI_RESET}`,

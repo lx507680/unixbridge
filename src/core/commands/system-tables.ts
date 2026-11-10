@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process'
 import { totalmem } from 'node:os'
 import { promisify } from 'node:util'
 import type { ColumnDef } from './types'
+import { localeEnv } from '../locale'
 import { executeLs, renderLsText } from './ls'
 import { currentPlatform, resolveStructured } from '../structured'
 
@@ -53,6 +54,7 @@ async function captureLs(args: string[], cwd: string): Promise<string> {
   if (process.platform !== 'win32') {
     const { stdout } = await execFileAsync('ls', commandArgs, {
       cwd,
+      env: localeEnv(),
       timeout: 10_000,
       maxBuffer: 4 * 1024 * 1024
     })
@@ -66,6 +68,7 @@ async function captureLs(args: string[], cwd: string): Promise<string> {
 async function capturePs(): Promise<string> {
   if (process.platform !== 'win32') {
     const { stdout } = await execFileAsync('ps', ['aux'], {
+      env: localeEnv(),
       timeout: 10_000,
       maxBuffer: 4 * 1024 * 1024
     })
@@ -89,6 +92,7 @@ async function captureDf(args: string[]): Promise<string> {
   if (process.platform !== 'win32') {
     const commandArgs = args.some((arg) => arg.includes('h')) ? ['-h'] : ['-k']
     const { stdout } = await execFileAsync('df', commandArgs, {
+      env: localeEnv(),
       timeout: 10_000,
       maxBuffer: 4 * 1024 * 1024
     })
