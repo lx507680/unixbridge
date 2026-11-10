@@ -52,7 +52,7 @@ export function resolveStructured(
     return {
       semantic: 'process-list',
       command: 'ps',
-      args: args.includes('aux') ? [...args] : ['aux', ...args],
+      args: [...args],
       createParser: createPsParser
     }
   }

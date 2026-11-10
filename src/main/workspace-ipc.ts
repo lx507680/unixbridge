@@ -9,7 +9,8 @@ import { executeStructuredCommand } from '../core/commands'
 import { resolveHomePath } from '../core/path'
 import { previewKind, previewUrl, type PreviewKind } from '../core/preview/kind'
 import { currentPlatform, resolveStructured } from '../core/structured'
-import { parseSshTarget, type SshTarget } from '../core/ssh/target'
+import { isSafeBranchName, parseGitStatus, summarizeNumstat } from '../core/workspace/git'
+import { sanitizeStoredWorkspace, type StoredGroup, type StoredSession } from '../core/workspace/stored'
 
 const execFileAsync = promisify(execFile)
 
@@ -137,37 +138,66 @@ async function readGpuUsage(): Promise<{ name: string; usage: number } | null> {
 
 const TEXT_PREVIEW_LIMIT = 512 * 1024
 
-export interface StoredSession {
-  id: string
-  name: string
-  color: string
-  kind: 'local' | 'ssh'
-  ssh?: SshTarget
+export type { StoredGroup, StoredSession }
+export { sanitizeStoredWorkspace }
+
+async function gitOutput(cwd: string, args: string[]): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync('git', ['-C', cwd, ...args], { timeout: 1500 })
+    return stdout
+  } catch {
+    return null
+  }
 }
 
-export function sanitizeStoredSessions(input: unknown): StoredSession[] {
-  if (!Array.isArray(input)) return []
-  const sessions: StoredSession[] = []
-  for (const item of input.slice(0, 20)) {
-    if (!item || typeof item !== 'object') continue
-    const record = item as Partial<StoredSession>
-    const id = String(record.id ?? '')
-    if (!/^[a-zA-Z0-9-]{8,80}$/.test(id)) continue
-    const name = String(record.name ?? '').trim().slice(0, 30) || '未命名会话'
-    const color = /^#[0-9a-fA-F]{6}$/.test(String(record.color ?? '')) ? String(record.color) : '#73b7c8'
-    if (record.kind === 'ssh') {
-      const ssh = parseSshTarget(
-        `${record.ssh?.user ? `${record.ssh.user}@` : ''}${record.ssh?.host ?? ''}${
-          record.ssh?.port && record.ssh.port !== 22 ? `:${record.ssh.port}` : ''
-        }`
-      )
-      if (!ssh) continue
-      sessions.push({ id, name, color, kind: 'ssh', ssh })
+async function nodeVersionLabel(): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync('node', ['--version'], { timeout: 800 })
+    const version = stdout.trim()
+    return version ? `Node ${version.startsWith('v') ? version : `v${version}`}` : 'Node --'
+  } catch {
+    return `Node ${process.version}`
+  }
+}
+
+async function listNodeRuntimes(): Promise<Array<{ version: string; source: string; binDir: string; current: boolean }>> {
+  const current = (await nodeVersionLabel()).replace(/^Node\s+v?/, '')
+  const found: Array<{ version: string; source: string; binDir: string; current: boolean }> = []
+  const seen = new Set<string>()
+  const roots = [
+    { source: 'nvm', root: join(homedir(), '.nvm', 'versions', 'node'), bin: 'bin' },
+    { source: 'fnm', root: join(homedir(), 'Library', 'Application Support', 'fnm', 'node-versions'), bin: join('installation', 'bin') },
+    { source: 'fnm', root: join(homedir(), '.local', 'share', 'fnm', 'node-versions'), bin: join('installation', 'bin') },
+    { source: 'volta', root: join(homedir(), '.volta', 'tools', 'image', 'node'), bin: 'bin' }
+  ]
+  for (const place of roots) {
+    let names: string[] = []
+    try {
+      names = await readdir(place.root)
+    } catch {
       continue
     }
-    sessions.push({ id, name, color, kind: 'local' })
+    for (const name of names.slice(0, 16)) {
+      const version = name.replace(/^v/, '')
+      if (!/^\d+\.\d+\.\d+/.test(version)) continue
+      const binDir = join(place.root, name, place.bin)
+      const binary = join(binDir, process.platform === 'win32' ? 'node.exe' : 'node')
+      try {
+        await stat(binary)
+      } catch {
+        continue
+      }
+      const key = `${version}:${binDir}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      found.push({ version, source: place.source, binDir, current: version === current })
+    }
   }
-  return sessions
+  found.sort((left, right) => right.version.localeCompare(left.version, undefined, { numeric: true }))
+  if (!found.some((item) => item.current) && current && current !== '--') {
+    found.unshift({ version: current, source: 'PATH', binDir: '', current: true })
+  }
+  return found.slice(0, 12)
 }
 
 export function registerWorkspaceIpc(
@@ -413,25 +443,55 @@ export function registerWorkspaceIpc(
     }
   )
 
-  ipcMain.handle('workspace:context', async (event) => {
+  ipcMain.handle('workspace:context', async (event, directory?: string) => {
     if (!isTrustedSender(event)) throw new Error('拒绝不受信任的工作区请求')
-    const cwd = process.env.USERPROFILE ?? process.env.HOME ?? process.cwd()
-    const [branchResult, statusResult] = await Promise.all([
-      execFileAsync('git', ['-C', cwd, 'branch', '--show-current'], { timeout: 1500 }).catch(
-        () => null
-      ),
-      execFileAsync('git', ['-C', cwd, 'status', '--porcelain'], { timeout: 1500 }).catch(
-        () => null
-      )
+    const cwd = resolveHomePath(typeof directory === 'string' ? directory : undefined)
+    const [runtime, branchResult, statusResult, diffResult] = await Promise.all([
+      nodeVersionLabel(),
+      gitOutput(cwd, ['branch', '--show-current']),
+      gitOutput(cwd, ['status', '--porcelain', '-z']),
+      gitOutput(cwd, ['diff', '--numstat', 'HEAD'])
     ])
-    const changes = statusResult?.stdout.trim()
-      ? statusResult.stdout.trim().split(/\r?\n/).length
-      : 0
+    const files = statusResult ? parseGitStatus(statusResult) : []
+    const summary = diffResult ? summarizeNumstat(diffResult) : { insertions: 0, deletions: 0 }
     return {
-      runtime: `Node ${process.version}`,
+      runtime,
       directory: cwd,
-      branch: branchResult?.stdout.trim() || null,
-      changes
+      branch: branchResult?.trim() || null,
+      changes: files.length,
+      insertions: summary.insertions,
+      deletions: summary.deletions
     }
+  })
+
+  ipcMain.handle('workspace:git', async (event, directory?: string) => {
+    if (!isTrustedSender(event)) throw new Error('拒绝不受信任的工作区请求')
+    const cwd = resolveHomePath(typeof directory === 'string' ? directory : undefined)
+    const [branchResult, branchesResult, statusResult, diffResult] = await Promise.all([
+      gitOutput(cwd, ['branch', '--show-current']),
+      gitOutput(cwd, ['branch', '--format=%(refname:short)']),
+      gitOutput(cwd, ['status', '--porcelain', '-z']),
+      gitOutput(cwd, ['diff', '--numstat', 'HEAD'])
+    ])
+    const summary = diffResult ? summarizeNumstat(diffResult) : { insertions: 0, deletions: 0 }
+    const files = statusResult ? parseGitStatus(statusResult) : []
+    return {
+      directory: cwd,
+      branch: branchResult?.trim() || null,
+      branches: (branchesResult ?? '')
+        .split(/\r?\n/)
+        .map((name) => name.trim())
+        .filter(isSafeBranchName)
+        .slice(0, 80),
+      changes: files.length,
+      insertions: summary.insertions,
+      deletions: summary.deletions,
+      files
+    }
+  })
+
+  ipcMain.handle('workspace:nodes', async (event) => {
+    if (!isTrustedSender(event)) throw new Error('拒绝不受信任的工作区请求')
+    return listNodeRuntimes()
   })
 }

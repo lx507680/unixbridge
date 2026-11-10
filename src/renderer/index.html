@@ -36,7 +36,13 @@
             aria-expanded="false"
             title="布局与显示设置"
           >☷</button>
-          <button id="new-session" class="icon-button tool-button add-button" type="button" aria-label="新建终端会话" title="新建终端会话">＋</button>
+          <div class="add-menu-anchor">
+            <button id="new-session" class="icon-button tool-button add-button" type="button" aria-label="新建终端或分组" aria-expanded="false" title="新建终端或分组">＋</button>
+            <div id="new-session-menu" class="add-menu" hidden>
+              <button id="create-terminal" type="button">新建终端</button>
+              <button id="create-group" type="button">新建分组</button>
+            </div>
+          </div>
           <button id="new-ssh" class="icon-button tool-button" type="button" aria-label="新建 SSH 会话" title="新建可重连的 SSH 会话">SSH</button>
         </div>
         <form id="ssh-form" class="ssh-form" hidden>
@@ -100,9 +106,9 @@
           </fieldset>
           <div class="settings-group range-settings">
             <label>AI 面板宽度 <output id="ai-width-value">220px</output></label>
-            <input id="ai-width" type="range" min="200" max="420" step="10" value="220" />
+            <input id="ai-width" type="range" min="200" max="640" step="10" value="220" />
             <label>右侧面板宽度 <output id="widgets-width-value">240px</output></label>
-            <input id="widgets-width" type="range" min="220" max="420" step="10" value="240" />
+            <input id="widgets-width" type="range" min="220" max="560" step="10" value="240" />
             <label>设置面板宽度 <output id="settings-width-value">320px</output></label>
             <input id="settings-width" type="range" min="280" max="420" step="10" value="320" />
           </div>
@@ -121,6 +127,14 @@
             <label class="range-label">字号 <output id="font-size-value">12px</output></label>
             <input id="font-size" type="range" min="10" max="24" step="1" value="12" />
           </fieldset>
+          <div class="settings-group">
+            <span class="settings-label">输入提示</span>
+            <div class="assist-toggles">
+              <button id="toggle-command-completion" type="button" aria-pressed="true">命令补全</button>
+              <button id="toggle-history-suggestions" type="button" aria-pressed="true">历史命令</button>
+            </div>
+            <small id="input-assist-status">输入时显示常用命令补全和历史命令。</small>
+          </div>
           <div class="settings-group ai-settings">
             <span class="settings-label">AI 服务</span>
             <div class="segmented-control" data-setting="ai-provider">
@@ -151,6 +165,10 @@
           <section id="session-editor" class="session-editor" aria-label="编辑会话" hidden>
             <label for="session-name">会话标签</label>
             <input id="session-name" type="text" maxlength="30" value="本地终端" />
+            <label for="session-group">所属分组</label>
+            <select id="session-group">
+              <option value="">未分组</option>
+            </select>
             <span class="session-editor-label">会话颜色</span>
             <div class="color-options" role="group" aria-label="选择会话颜色">
               <button type="button" data-color="#73b7c8" aria-label="蓝色"></button>
@@ -169,7 +187,8 @@
         <header class="titlebar">
           <button id="mobile-menu" class="icon-button mobile-menu" type="button" aria-label="打开侧边栏">☰</button>
           <div class="workspace-title">
-            <span class="terminal-glyph">›_</span>
+            <button id="sidebar-reveal" class="icon-button terminal-glyph" type="button" aria-label="展开侧边栏" title="展开侧边栏" hidden>›</button>
+            <span id="title-glyph" class="terminal-glyph">›_</span>
             <div>
               <strong id="workspace-title-label">本地终端</strong>
               <span id="workspace-subtitle">~/workspace</span>
@@ -208,27 +227,21 @@
 
           <section class="terminal-column">
             <div id="terminal-context" class="terminal-context" hidden>
-              <span class="context-chip" id="context-runtime">Node --</span>
+              <button type="button" class="context-chip" id="context-runtime" title="切换 Node 版本">Node --</button>
               <button type="button" class="context-chip context-directory" id="context-directory" title="查看此目录中的文件夹">~</button>
-              <span class="context-chip" id="context-branch">无 Git 分支</span>
-              <span class="context-chip" id="context-changes">0 changes</span>
+              <button type="button" class="context-chip" id="context-branch" title="查看并切换 Git 分支">无 Git 分支</button>
+              <button type="button" class="context-chip" id="context-changes" title="查看改动文件">0 changes</button>
               <code id="context-command"></code>
+            </div>
+            <div id="context-popover" class="context-popover" hidden>
+              <input id="context-popover-search" type="search" placeholder="搜索…" autocomplete="off" hidden />
+              <div id="context-popover-list" class="context-popover-list"></div>
             </div>
             <div id="directory-browser" class="directory-browser" hidden>
               <div id="directory-browser-path" class="directory-browser-path"></div>
               <div id="directory-browser-list" class="directory-browser-list"></div>
             </div>
             <section id="blocks" class="blocks" aria-label="命令工作区">
-              <section id="semantic-block" class="semantic-block" hidden>
-                <div class="semantic-metadata">
-                  <div class="semantic-heading">
-                    <button id="semantic-toggle" type="button" aria-expanded="false" aria-controls="semantic-details">列说明</button>
-                  </div>
-                  <div id="semantic-header" class="semantic-columns"></div>
-                  <p id="semantic-legend" class="semantic-legend" hidden></p>
-                  <div id="semantic-details" class="semantic-details" hidden></div>
-                </div>
-              </section>
               <section id="preview-block" class="preview-block" hidden>
                 <header class="preview-header">
                   <strong id="preview-title">文件预览</strong>
@@ -240,6 +253,18 @@
                 <div id="preview-body" class="preview-body"></div>
               </section>
               <section id="terminal" class="terminal-block" aria-label="终端输出">
+                <section id="semantic-block" class="semantic-block" hidden>
+                  <div class="semantic-metadata">
+                    <div class="semantic-line">
+                      <div id="semantic-header" class="semantic-columns"></div>
+                      <button id="semantic-toggle" type="button" aria-expanded="false" aria-controls="semantic-details">列说明</button>
+                    </div>
+                    <p id="semantic-inline-note" class="semantic-inline-note header-desc" hidden></p>
+                    <p id="semantic-legend" class="semantic-legend" hidden></p>
+                    <div id="semantic-details" class="semantic-details" hidden></div>
+                  </div>
+                </section>
+                <div id="terminal-screen" class="terminal-screen"></div>
                 <div id="command-complete" class="command-complete" hidden></div>
               </section>
             </section>

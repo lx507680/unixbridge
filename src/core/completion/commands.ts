@@ -52,9 +52,20 @@ export const commonCommands: readonly CommandSuggestion[] = [
   { command: 'unzip', description: '解压 zip' }
 ]
 
-export function suggestCommands(input: string, history: readonly string[] = []): CommandSuggestion[] {
+export interface SuggestOptions {
+  commands?: boolean
+  history?: boolean
+}
+
+export function suggestCommands(
+  input: string,
+  history: readonly string[] = [],
+  options: SuggestOptions = {}
+): CommandSuggestion[] {
   const query = input.trim().toLowerCase()
   if (!query) return []
+  const includeCommands = options.commands !== false
+  const includeHistory = options.history !== false
   const seen = new Set<string>()
   const results: CommandSuggestion[] = []
   const push = (command: string, description: string): void => {
@@ -63,7 +74,11 @@ export function suggestCommands(input: string, history: readonly string[] = []):
     seen.add(key)
     results.push({ command, description })
   }
-  for (const command of [...history].reverse()) push(command, '历史命令')
-  for (const item of commonCommands) push(item.command, item.description)
+  if (includeHistory) {
+    for (const command of [...history].reverse()) push(command, '历史命令')
+  }
+  if (includeCommands) {
+    for (const item of commonCommands) push(item.command, item.description)
+  }
   return results.slice(0, 8)
 }

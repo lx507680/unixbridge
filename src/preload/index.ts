@@ -69,6 +69,18 @@ export interface StoredSession {
   color: string
   kind: 'local' | 'ssh'
   ssh?: SshTarget
+  groupId?: string
+}
+
+export interface StoredGroup {
+  id: string
+  name: string
+  color: string
+}
+
+export interface StoredWorkspace {
+  sessions: StoredSession[]
+  groups: StoredGroup[]
 }
 
 export interface WorkspaceContext {
@@ -76,6 +88,30 @@ export interface WorkspaceContext {
   directory: string
   branch: string | null
   changes: number
+  insertions: number
+  deletions: number
+}
+
+export interface GitFileChange {
+  status: string
+  path: string
+}
+
+export interface GitDetails {
+  directory: string
+  branch: string | null
+  branches: string[]
+  changes: number
+  insertions: number
+  deletions: number
+  files: GitFileChange[]
+}
+
+export interface NodeRuntime {
+  version: string
+  source: string
+  binDir: string
+  current: boolean
 }
 
 export interface ColumnDef {
@@ -107,14 +143,16 @@ export interface UnixbridgeApi {
   metrics: () => Promise<SystemMetrics>
   listFiles: (path?: string) => Promise<FileListing>
   previewFile: (path: string) => Promise<FilePreview>
-  loadSessions: () => Promise<StoredSession[]>
-  saveSessions: (sessions: StoredSession[]) => Promise<StoredSession[]>
+  loadSessions: () => Promise<StoredWorkspace>
+  saveSessions: (workspace: StoredWorkspace) => Promise<StoredWorkspace>
   structuredCommand: (
     command: string,
     args: string[],
     cwd?: string
   ) => Promise<StructuredCommandResult>
-  workspaceContext: () => Promise<WorkspaceContext>
+  workspaceContext: (directory?: string) => Promise<WorkspaceContext>
+  workspaceGit: (directory?: string) => Promise<GitDetails>
+  nodeRuntimes: () => Promise<NodeRuntime[]>
 }
 
 const api: UnixbridgeApi = {
@@ -166,10 +204,12 @@ const api: UnixbridgeApi = {
   listFiles: (path) => ipcRenderer.invoke('files:list', path),
   previewFile: (path) => ipcRenderer.invoke('files:preview', path),
   loadSessions: () => ipcRenderer.invoke('sessions:load'),
-  saveSessions: (sessions) => ipcRenderer.invoke('sessions:save', sessions),
+  saveSessions: (workspace) => ipcRenderer.invoke('sessions:save', workspace),
   structuredCommand: (command, args, cwd) =>
     ipcRenderer.invoke('commands:structured', { command, args, cwd }),
-  workspaceContext: () => ipcRenderer.invoke('workspace:context')
+  workspaceContext: (directory) => ipcRenderer.invoke('workspace:context', directory),
+  workspaceGit: (directory) => ipcRenderer.invoke('workspace:git', directory),
+  nodeRuntimes: () => ipcRenderer.invoke('workspace:nodes')
 }
 
 contextBridge.exposeInMainWorld('unixbridge', api)

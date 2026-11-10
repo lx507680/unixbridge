@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { displayWidth, renderSemanticTable } from '../../src/core/output'
+import { displayWidth, outputIncludesHeader, renderSemanticTable } from '../../src/core/output'
 import { createLsParser } from '../../src/core/structured'
 
 const columns = [
@@ -62,7 +62,33 @@ describe('semantic table renderer', () => {
     expect(owner?.start).toBe(firstOwner)
     expect(characterAtDisplay(rendered.legendText, owner?.start ?? 0)).toBe('所')
     expect(characterAtDisplay(rendered.headerText, owner?.start ?? 0)).toBe('所')
+    expect(rendered.headerText).toContain('链接')
+    expect(rendered.headerText).toContain('用户组')
+    expect(rendered.headerText).not.toContain('…')
     expect(rendered.legendText).not.toContain(' · ')
+  })
+
+  it('detects a header the command already printed', () => {
+    const columns = [
+      { key: 'PID', header: 'PID', description: '进程号' },
+      { key: 'TTY', header: 'TTY', description: '终端' },
+      { key: 'TIME', header: 'TIME', description: 'CPU 时间' }
+    ]
+    expect(outputIncludesHeader('  PID TTY           TIME CMD\n18127 ttys000 0:00.28 zsh\n', columns)).toBe(true)
+    expect(outputIncludesHeader('drwxr-xr-x  4 luoxian staff 128 Jan 6 2026 flutter\n', columns)).toBe(false)
+  })
+
+  it('keeps spaces between adjacent headers', () => {
+    const rendered = renderSemanticTable(
+      [
+        { key: 'PID', header: 'PID', description: '进程号', type: 'numeric' },
+        { key: '%CPU', header: '%CPU', description: 'CPU 占用', type: 'percentage' }
+      ],
+      [{ PID: '18127', '%CPU': '0.1' }],
+      false,
+      'luoxian 18127 0.1 0.2 1 2 ?? S 1:00 0:00.01 zsh'
+    )
+    expect(rendered.headerText).not.toContain('PID%CPU')
   })
 
   it('expands detailed descriptions when requested', () => {

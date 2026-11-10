@@ -4,7 +4,10 @@ import { columnsFor, outputLines, type CommandParser } from '../types'
 const PS_AUX_LINE =
   /^(?<user>\S+)\s+(?<pid>\d+)\s+(?<cpu>[\d.]+)\s+(?<mem>[\d.]+)\s+(?<vsz>\d+)\s+(?<rss>\d+)\s+(?<tty>\S+)\s+(?<stat>[A-Za-z+<]+)\s+(?<start>\S+)\s+(?<time>[\d:.]+)\s+(?<command>.+)$/
 
-const FIELD_ORDER = ['USER', 'PID', '%CPU', '%MEM', 'VSZ', 'RSS', 'TT', 'STAT', 'START', 'TIME', 'COMMAND'] as const
+const PS_DEFAULT_LINE =
+  /^\s*(?<pid>\d+)\s+(?<tty>\?\?|\S+)\s+(?<time>\d+:\d{2}(?:\.\d+)?)\s+(?<command>.+)$/
+
+const FIELD_ORDER = ['USER', 'PID', '%CPU', '%MEM', 'VSZ', 'RSS', 'TT', 'TTY', 'STAT', 'START', 'TIME', 'COMMAND'] as const
 
 const FIELDS: Readonly<Record<string, ColumnDef>> = {
   USER: { key: 'USER', header: 'USER', description: '用户', detailed: '启动该进程的用户。', type: 'default' },
@@ -14,6 +17,7 @@ const FIELDS: Readonly<Record<string, ColumnDef>> = {
   VSZ: { key: 'VSZ', header: 'VSZ', description: '虚拟内存', detailed: '进程虚拟地址空间大小，单位通常为 KiB。', type: 'numeric' },
   RSS: { key: 'RSS', header: 'RSS', description: '常驻内存', detailed: '当前驻留在物理内存中的大小，单位通常为 KiB。', type: 'numeric' },
   TT: { key: 'TT', header: 'TT', description: '终端', detailed: '进程关联的终端；?? 表示没有控制终端。', type: 'default' },
+  TTY: { key: 'TTY', header: 'TTY', description: '终端', detailed: '进程关联的终端；?? 表示没有控制终端。', type: 'default' },
   STAT: { key: 'STAT', header: 'STAT', description: '进程状态', detailed: '进程状态，如 R 运行、S 休眠、Z 僵尸。', type: 'default' },
   START: { key: 'START', header: 'START', description: '启动时间', detailed: '进程启动时间。', type: 'date' },
   TIME: { key: 'TIME', header: 'TIME', description: 'CPU 时间', detailed: '进程累计消耗的 CPU 时间。', type: 'default' },
@@ -41,12 +45,24 @@ export function createPsParser(): CommandParser {
     match: (command, platform) =>
       command === 'ps' && (platform === 'mac' || platform === 'linux'),
     parse(raw) {
-      rows = outputLines(raw).flatMap((line) => {
-        if (/^USER\s+/.test(line)) return []
+      const lines = outputLines(raw).filter((line) => !/^\s*(?:USER|PID)\s+/.test(line))
+      const auxRows = lines.flatMap((line) => {
         const match = PS_AUX_LINE.exec(line.trim())
         if (!match?.groups) return []
         return [Object.fromEntries(GROUP_TO_FIELD.map(([group, field]) => [field, match.groups?.[group] ?? '']))]
       })
+      rows = auxRows.length > 0
+        ? auxRows
+        : lines.flatMap((line) => {
+          const match = PS_DEFAULT_LINE.exec(line)
+          if (!match?.groups) return []
+          return [{
+            PID: match.groups.pid ?? '',
+            TTY: match.groups.tty ?? '',
+            TIME: match.groups.time ?? '',
+            COMMAND: match.groups.command ?? ''
+          }]
+        })
       return rows
     },
     columns: () => columnsFor(rows, FIELD_ORDER, FIELDS)

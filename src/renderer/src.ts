@@ -1,9 +1,17 @@
 import { FitAddon } from '@xterm/addon-fit'
 import { Terminal } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
+import { formatChangeChip, isSafeBranchName, shellQuote } from '../core/workspace/git'
+import type { GitDetails, NodeRuntime, StoredGroup } from '../preload'
 import { classifyFile, fileKindLabel, fileKindMark } from './file-icons'
 import { suggestCommands, type CommandSuggestion } from '../core/completion/commands'
-import { displayWidth, renderSemanticTable, type SemanticTableRender } from '../core/output/semantic-table'
+import {
+  displayWidth,
+  outputIncludesHeader,
+  renderSemanticTable,
+  type SemanticTableRender
+} from '../core/output/semantic-table'
+import { translate } from '../core/translator'
 import { parseSshTarget, type SshTarget } from '../core/ssh/target'
 import { parseCommandLine } from '../core/parser'
 import { canStructure, type StructuredPlatform } from '../core/structured'
@@ -16,7 +24,8 @@ function element<T extends Element>(selector: string): T {
   return node
 }
 
-const container = element<HTMLElement>('#terminal')
+const terminalRoot = element<HTMLElement>('#terminal')
+const container = element<HTMLElement>('#terminal-screen')
 const commandComplete = element<HTMLElement>('#command-complete')
 const status = element<HTMLElement>('#session-status')
 const commandSearch = element<HTMLInputElement>('#command-search')
@@ -48,6 +57,9 @@ const fontSizeValue = element<HTMLOutputElement>('#font-size-value')
 const fontFamilyInput = element<HTMLSelectElement>('#font-family')
 const settingsWidthInput = element<HTMLInputElement>('#settings-width')
 const settingsWidthValue = element<HTMLOutputElement>('#settings-width-value')
+const commandCompletionButton = element<HTMLButtonElement>('#toggle-command-completion')
+const historySuggestionsButton = element<HTMLButtonElement>('#toggle-history-suggestions')
+const inputAssistStatus = element<HTMLElement>('#input-assist-status')
 const aiForm = element<HTMLFormElement>('#ai-form')
 const aiInput = element<HTMLTextAreaElement>('#ai-input')
 const aiMessages = element<HTMLElement>('#ai-messages')
@@ -84,12 +96,18 @@ const directoryBrowser = element<HTMLElement>('#directory-browser')
 const directoryBrowserPath = element<HTMLElement>('#directory-browser-path')
 const directoryBrowserList = element<HTMLElement>('#directory-browser-list')
 const semanticDetails = element<HTMLElement>('#semantic-details')
+const semanticInlineNote = element<HTMLElement>('#semantic-inline-note')
 const semanticToggle = element<HTMLButtonElement>('#semantic-toggle')
 const contextRuntime = element<HTMLElement>('#context-runtime')
 const contextDirectory = element<HTMLElement>('#context-directory')
 const contextBranch = element<HTMLElement>('#context-branch')
 const contextChanges = element<HTMLElement>('#context-changes')
 const contextCommand = element<HTMLElement>('#context-command')
+const contextPopover = element<HTMLElement>('#context-popover')
+const contextPopoverSearch = element<HTMLInputElement>('#context-popover-search')
+const contextPopoverList = element<HTMLElement>('#context-popover-list')
+const newSessionMenu = element<HTMLElement>('#new-session-menu')
+const sessionGroupInput = element<HTMLSelectElement>('#session-group')
 const layoutStatus = element<HTMLElement>('#layout-status')
 
 workbench.append(settingsResizer, settingsPopover)
@@ -115,6 +133,8 @@ interface AppearanceSettings {
   fontSize: number
   fontFamily: string
   settingsWidth: number
+  commandCompletion: boolean
+  historySuggestions: boolean
 }
 
 const defaultSettings: AppearanceSettings = {
@@ -131,7 +151,9 @@ const defaultSettings: AppearanceSettings = {
   widgetsWidth: 240,
   fontSize: 12,
   fontFamily: 'Cascadia Code',
-  settingsWidth: 320
+  settingsWidth: 320,
+  commandCompletion: true,
+  historySuggestions: true
 }
 
 function loadSettings(): AppearanceSettings {
@@ -240,6 +262,8 @@ interface UiSession {
   output: string
   inputBuffer: string
   currentDirectory?: string
+  groupId?: string
+  nodeLabel?: string
   ssh?: SshTarget
   disposed: boolean
   reconnects: number
@@ -247,8 +271,13 @@ interface UiSession {
 }
 
 const uiSessions = new Map<string, UiSession>()
+const sessionGroups: Array<StoredGroup & { collapsed: boolean }> = []
+const groupColors = ['#73b7c8', '#6fbd9c', '#d78db5', '#d3a65f', '#8f83d8']
 let activeSessionId = ''
 let sessionSequence = 0
+let editingGroupId = ''
+let contextPopoverKind: 'node' | 'branch' | 'changes' | '' = ''
+let latestGitDetails: GitDetails | null = null
 
 function getActiveSession(): UiSession | undefined {
   return uiSessions.get(activeSessionId)
@@ -273,62 +302,175 @@ function syncActiveSessionUi(): void {
   workspaceSubtitle.textContent = appearance.title === 'branch' ? 'main' : '~/workspace'
   document.documentElement.style.setProperty('--session-color', session.color)
   if (document.activeElement !== sessionNameInput) sessionNameInput.value = session.name
-  for (const button of document.querySelectorAll<HTMLButtonElement>('.color-options [data-color]')) {
+  syncSessionGroupOptions()
+  sessionGroupInput.value = session.groupId ?? ''
+  for (const button of document.querySelectorAll<HTMLButtonElement>('#session-editor .color-options [data-color]')) {
     button.classList.toggle('is-selected', button.dataset.color === session.color)
   }
+}
+
+function createSessionCard(session: UiSession): HTMLElement {
+  const card = document.createElement('div')
+  card.className = 'session-card'
+  card.style.setProperty('--session-card-color', session.color)
+
+  const button = document.createElement('button')
+  button.type = 'button'
+  button.className = `session-item${session.id === activeSessionId ? ' is-active' : ''}`
+  button.dataset.sessionId = session.id
+  button.innerHTML =
+    '<span class="session-icon">›_</span><span class="session-copy"><strong></strong><small></small><small class="session-metadata"><span data-metadata="branch">⌘ main</span><span data-metadata="directory">~/workspace</span></small></span>'
+  const title = button.querySelector('strong')!
+  const platform = button.querySelector<HTMLElement>('.session-copy > small')!
+  title.textContent = sessionDisplayTitle(session)
+  platform.textContent = session.platformLabel
+  if (session.id === activeSessionId) {
+    title.id = 'session-title'
+    platform.id = 'session-platform'
+  }
+  for (const node of button.querySelectorAll<HTMLElement>('[data-metadata]')) {
+    node.hidden = !appearance.metadata.includes(node.dataset.metadata ?? '')
+  }
+  button.addEventListener('click', () => switchSession(session.id))
+
+  const edit = document.createElement('button')
+  edit.type = 'button'
+  edit.className = 'session-edit'
+  edit.textContent = '•••'
+  edit.setAttribute('aria-label', `编辑 ${session.name}`)
+  edit.addEventListener('click', (event) => {
+    event.stopPropagation()
+    if (activeSessionId !== session.id) switchSession(session.id)
+    setSessionEditorOpen(sessionEditor.hidden)
+  })
+
+  const remove = document.createElement('button')
+  remove.type = 'button'
+  remove.className = 'session-remove'
+  remove.textContent = '×'
+  remove.setAttribute('aria-label', `删除 ${session.name}`)
+  remove.title = '删除终端会话'
+  remove.addEventListener('click', (event) => {
+    event.stopPropagation()
+    removeSession(session.id)
+  })
+  card.append(button, edit, remove)
+  return card
+}
+
+function renderGroupEditor(group: StoredGroup): HTMLElement {
+  const editor = document.createElement('form')
+  editor.className = 'group-editor'
+  editor.addEventListener('click', (event) => event.stopPropagation())
+  editor.addEventListener('submit', (event) => event.preventDefault())
+  const nameLabel = document.createElement('label')
+  nameLabel.textContent = '分组名称'
+  const nameInput = document.createElement('input')
+  nameInput.maxLength = 30
+  nameInput.value = group.name
+  nameInput.addEventListener('input', () => {
+    group.name = nameInput.value.trim().slice(0, 30) || '未命名分组'
+    rememberSessions()
+    const title = editor.parentElement?.querySelector('.group-header strong')
+    if (title) title.textContent = group.name
+  })
+  const colorLabel = document.createElement('span')
+  colorLabel.className = 'session-editor-label'
+  colorLabel.textContent = '分组颜色'
+  const colors = document.createElement('div')
+  colors.className = 'color-options'
+  for (const color of groupColors) {
+    const swatch = document.createElement('button')
+    swatch.type = 'button'
+    swatch.dataset.color = color
+    swatch.classList.toggle('is-selected', color === group.color)
+    swatch.addEventListener('click', () => {
+      group.color = color
+      rememberSessions()
+      renderSessionList()
+    })
+    colors.append(swatch)
+  }
+  const dissolve = document.createElement('button')
+  dissolve.type = 'button'
+  dissolve.textContent = '解散分组'
+  dissolve.addEventListener('click', () => {
+    for (const session of uiSessions.values()) {
+      if (session.groupId === group.id) delete session.groupId
+    }
+    const index = sessionGroups.findIndex((item) => item.id === group.id)
+    if (index >= 0) sessionGroups.splice(index, 1)
+    editingGroupId = ''
+    rememberSessions()
+    renderSessionList()
+  })
+  editor.append(nameLabel, nameInput, colorLabel, colors, dissolve)
+  return editor
 }
 
 function renderSessionList(): void {
   sessionList.replaceChildren()
   sessionCount.textContent = String(uiSessions.size)
-  for (const session of uiSessions.values()) {
-    const card = document.createElement('div')
-    card.className = 'session-card'
-    card.style.setProperty('--session-card-color', session.color)
-
-    const button = document.createElement('button')
-    button.type = 'button'
-    button.className = `session-item${session.id === activeSessionId ? ' is-active' : ''}`
-    button.dataset.sessionId = session.id
-    button.innerHTML =
-      '<span class="session-icon">›_</span><span class="session-copy"><strong></strong><small></small><small class="session-metadata"><span data-metadata="branch">⌘ main</span><span data-metadata="directory">~/workspace</span></small></span>'
-    const title = button.querySelector('strong')!
-    const platform = button.querySelector<HTMLElement>('.session-copy > small')!
-    title.textContent = sessionDisplayTitle(session)
-    platform.textContent = session.platformLabel
-    if (session.id === activeSessionId) {
-      title.id = 'session-title'
-      platform.id = 'session-platform'
-    }
-    for (const node of button.querySelectorAll<HTMLElement>('[data-metadata]')) {
-      node.hidden = !appearance.metadata.includes(node.dataset.metadata ?? '')
-    }
-    button.addEventListener('click', () => switchSession(session.id))
-
+  const grouped = new Set<string>()
+  for (const group of sessionGroups) {
+    const section = document.createElement('section')
+    section.className = 'session-group'
+    section.style.setProperty('--group-color', group.color)
+    const header = document.createElement('button')
+    header.type = 'button'
+    header.className = 'group-header'
+    const swatch = document.createElement('i')
+    swatch.className = 'group-swatch'
+    const title = document.createElement('strong')
+    title.textContent = group.name
+    const count = document.createElement('span')
+    const members = [...uiSessions.values()].filter((session) => session.groupId === group.id)
+    count.textContent = String(members.length)
     const edit = document.createElement('button')
     edit.type = 'button'
-    edit.className = 'session-edit'
-    edit.textContent = '•••'
-    edit.setAttribute('aria-label', `编辑 ${session.name}`)
+    edit.className = 'group-edit'
+    edit.textContent = '编辑'
     edit.addEventListener('click', (event) => {
       event.stopPropagation()
-      if (activeSessionId !== session.id) switchSession(session.id)
-      setSessionEditorOpen(sessionEditor.hidden)
+      editingGroupId = editingGroupId === group.id ? '' : group.id
+      renderSessionList()
     })
-
-    const remove = document.createElement('button')
-    remove.type = 'button'
-    remove.className = 'session-remove'
-    remove.textContent = '×'
-    remove.setAttribute('aria-label', `删除 ${session.name}`)
-    remove.title = '删除终端会话'
-    remove.addEventListener('click', (event) => {
+    const add = document.createElement('button')
+    add.type = 'button'
+    add.className = 'group-add'
+    add.dataset.sessionMenu = group.id
+    add.textContent = '＋'
+    add.title = '新建终端或分组'
+    add.setAttribute('aria-label', '新建终端或分组')
+    add.setAttribute('aria-expanded', 'false')
+    add.addEventListener('click', (event) => {
       event.stopPropagation()
-      removeSession(session.id)
+      openSessionMenu(add, group.id)
     })
-    card.append(button, edit, remove)
-    sessionList.append(card)
+    header.append(swatch, title, count)
+    header.addEventListener('click', () => {
+      group.collapsed = !group.collapsed
+      renderSessionList()
+    })
+    const row = document.createElement('div')
+    row.className = 'group-header-row'
+    row.append(header, add, edit)
+    section.append(row)
+    if (editingGroupId === group.id) section.append(renderGroupEditor(group))
+    if (!group.collapsed) {
+      for (const session of members) {
+        grouped.add(session.id)
+        section.append(createSessionCard(session))
+      }
+    } else {
+      for (const session of members) grouped.add(session.id)
+    }
+    sessionList.append(section)
   }
+  for (const session of uiSessions.values()) {
+    if (!grouped.has(session.id)) sessionList.append(createSessionCard(session))
+  }
+  syncSessionGroupOptions()
 }
 
 function switchSession(sessionId: string): void {
@@ -376,6 +518,31 @@ function removeSession(sessionId: string): void {
   void startSession()
 }
 
+function layoutWidth(): number {
+  const shell = document.querySelector('.app-shell')
+  const sidebar = document.querySelector('.sidebar')
+  const total = shell instanceof HTMLElement ? shell.clientWidth : window.innerWidth
+  const sidebarWidth = sidebar instanceof HTMLElement ? sidebar.getBoundingClientRect().width : 0
+  return Math.max(0, total - sidebarWidth)
+}
+
+function fittedPanelWidths(showAi: boolean, showWidgets: boolean): { ai: number; widgets: number } {
+  const settingsOpen = !settingsPopover.hidden
+  const settings = settingsOpen ? appearance.settingsWidth + 4 : 0
+  const aiGutter = showAi ? 4 : 0
+  const widgetsOpen = showWidgets && !settingsOpen
+  const widgetsGutter = widgetsOpen ? 4 : 0
+  const ai = showAi ? appearance.aiWidth : 0
+  const widgets = widgetsOpen ? appearance.widgetsWidth : 0
+  const available = layoutWidth()
+  if (available < 200) return { ai, widgets }
+  const room = Math.max(0, available - settings - 320 - aiGutter - widgetsGutter)
+  if (ai + widgets <= room) return { ai, widgets }
+  if (widgets === 0) return { ai: Math.min(ai, room), widgets: 0 }
+  const fittedAi = Math.min(ai, Math.max(0, room - Math.min(widgets, 220)))
+  return { ai: fittedAi, widgets: Math.max(0, room - fittedAi) }
+}
+
 function saveAndApplyAppearance(): void {
   localStorage.setItem('unixbridge:appearance', JSON.stringify(appearance))
   document.body.dataset.theme = appearance.theme
@@ -405,12 +572,11 @@ function saveAndApplyAppearance(): void {
     appearance.panels.includes('metrics') || appearance.panels.includes('files')
   const showAi = appearance.layout === 'assistant' || (appearance.layout === 'balanced' && aiEnabled)
   const showWidgets = appearance.layout === 'balanced' && widgetsEnabled
-  const effectiveAiWidth = appearance.layout === 'assistant' ? Math.max(appearance.aiWidth, 400) : appearance.aiWidth
-  const effectiveWidgetsWidth = appearance.widgetsWidth
-  document.documentElement.style.setProperty('--ai-column', showAi ? `${effectiveAiWidth}px` : '0px')
+  const fitted = fittedPanelWidths(showAi, showWidgets)
+  document.documentElement.style.setProperty('--ai-column', showAi ? `${fitted.ai}px` : '0px')
   document.documentElement.style.setProperty(
     '--widgets-column',
-    showWidgets ? `${effectiveWidgetsWidth}px` : '0px'
+    showWidgets ? `${fitted.widgets}px` : '0px'
   )
   document.documentElement.style.setProperty('--ai-gutter', showAi ? '4px' : '0px')
   document.documentElement.style.setProperty('--widgets-gutter', showWidgets ? '4px' : '0px')
@@ -423,6 +589,18 @@ function saveAndApplyAppearance(): void {
   fontFamilyInput.value = appearance.fontFamily
   settingsWidthInput.value = String(appearance.settingsWidth)
   settingsWidthValue.value = `${appearance.settingsWidth}px`
+  commandCompletionButton.classList.toggle('is-selected', appearance.commandCompletion)
+  commandCompletionButton.setAttribute('aria-pressed', String(appearance.commandCompletion))
+  historySuggestionsButton.classList.toggle('is-selected', appearance.historySuggestions)
+  historySuggestionsButton.setAttribute('aria-pressed', String(appearance.historySuggestions))
+  inputAssistStatus.textContent =
+    appearance.commandCompletion && appearance.historySuggestions
+      ? '输入时显示常用命令补全和历史命令。'
+      : appearance.commandCompletion
+        ? '输入时只显示常用命令补全。'
+        : appearance.historySuggestions
+          ? '输入时只显示历史命令。'
+          : '输入时不显示命令提示。'
   aiPanel.hidden = !showAi
   aiResizer.hidden = !showAi
   metricsWidget.hidden = !showWidgets || !appearance.panels.includes('metrics')
@@ -465,7 +643,7 @@ function saveAndApplyAppearance(): void {
     appearance.layout === 'terminal'
       ? '终端优先：AI 和右侧面板已收起，终端占满工作区。'
       : appearance.layout === 'assistant'
-        ? 'AI 优先：AI 面板已展开到至少 400px。'
+        ? 'AI 优先：AI 面板已展开，可拖拽分隔条或用下方宽度滑块调整。'
         : '均衡：按下方开关和宽度显示 AI 与右侧面板。'
   requestAnimationFrame(() => {
     fitAddon.fit()
@@ -526,7 +704,13 @@ for (const group of document.querySelectorAll<HTMLElement>('.segmented-control')
     if (setting === 'view') appearance.view = button.dataset.value as ViewMode
     if (setting === 'density') appearance.density = button.dataset.value as Density
     if (setting === 'theme') appearance.theme = button.dataset.value as Theme
-    if (setting === 'layout') appearance.layout = button.dataset.value as LayoutMode
+    if (setting === 'layout') {
+      appearance.layout = button.dataset.value as LayoutMode
+      if (appearance.layout === 'assistant') {
+        appearance.aiWidth = Math.max(appearance.aiWidth, 400)
+        if (!appearance.panels.includes('ai')) appearance.panels = [...appearance.panels, 'ai']
+      }
+    }
     saveAndApplyAppearance()
   })
 }
@@ -585,13 +769,17 @@ for (const button of document.querySelectorAll<HTMLButtonElement>('[data-module]
 }
 
 aiWidthInput.addEventListener('input', () => {
-  appearance.layout = 'balanced'
   appearance.aiWidth = Number(aiWidthInput.value)
+  if (appearance.layout === 'terminal') appearance.layout = 'assistant'
+  if (!appearance.panels.includes('ai')) appearance.panels = [...appearance.panels, 'ai']
   saveAndApplyAppearance()
 })
 widgetsWidthInput.addEventListener('input', () => {
   appearance.layout = 'balanced'
   appearance.widgetsWidth = Number(widgetsWidthInput.value)
+  if (!appearance.panels.includes('metrics') && !appearance.panels.includes('files')) {
+    appearance.panels = [...appearance.panels, 'metrics', 'files']
+  }
   saveAndApplyAppearance()
 })
 fontSizeInput.addEventListener('input', () => {
@@ -632,28 +820,29 @@ function installPanelResizer(
       const delta = moveEvent.clientX - startX
       const requested = side === 'ai' ? startWidth + delta : startWidth - delta
       const minWidth = side === 'ai' ? 200 : side === 'widgets' ? 220 : 280
-      const maxWidth = 420
+      const maxWidth = side === 'settings' ? 420 : Math.max(640, layoutWidth() - 360)
       const width = Math.max(minWidth, Math.min(maxWidth, Math.round(requested / 10) * 10))
       if (side === 'ai') {
-        appearance.layout = 'balanced'
+        if (appearance.layout === 'terminal') appearance.layout = 'assistant'
+        if (!appearance.panels.includes('ai')) appearance.panels = [...appearance.panels, 'ai']
         appearance.aiWidth = width
         aiWidthInput.value = String(width)
         aiWidthValue.value = `${width}px`
-        document.documentElement.style.setProperty('--ai-column', `${width}px`)
       } else if (side === 'widgets') {
         appearance.layout = 'balanced'
+        if (!appearance.panels.includes('metrics') && !appearance.panels.includes('files')) {
+          appearance.panels = [...appearance.panels, 'metrics', 'files']
+        }
         appearance.widgetsWidth = width
         widgetsWidthInput.value = String(width)
         widgetsWidthValue.value = `${width}px`
-        document.documentElement.style.setProperty('--widgets-column', `${width}px`)
       } else {
         appearance.settingsWidth = width
         settingsWidthInput.value = String(width)
         settingsWidthValue.value = `${width}px`
         document.documentElement.style.setProperty('--settings-column', `${width}px`)
       }
-      fitAddon.fit()
-      resizeActiveTerminal()
+      saveAndApplyAppearance()
     }
 
     const onUp = (): void => {
@@ -674,13 +863,16 @@ function installPanelResizer(
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
     event.preventDefault()
     const delta = event.key === 'ArrowRight' ? 10 : -10
-    if (side === 'ai') appearance.aiWidth = Math.max(200, Math.min(420, appearance.aiWidth + delta))
-    else if (side === 'widgets') {
-      appearance.widgetsWidth = Math.max(220, Math.min(420, appearance.widgetsWidth - delta))
+    const wideLimit = Math.max(640, layoutWidth() - 360)
+    if (side === 'ai') {
+      if (appearance.layout === 'terminal') appearance.layout = 'assistant'
+      appearance.aiWidth = Math.max(200, Math.min(wideLimit, appearance.aiWidth + delta))
+    } else if (side === 'widgets') {
+      appearance.layout = 'balanced'
+      appearance.widgetsWidth = Math.max(220, Math.min(wideLimit, appearance.widgetsWidth - delta))
     } else {
       appearance.settingsWidth = Math.max(280, Math.min(420, appearance.settingsWidth - delta))
     }
-    if (side !== 'settings') appearance.layout = 'balanced'
     saveAndApplyAppearance()
     if (side === 'settings') {
       document.documentElement.style.setProperty('--settings-column', `${appearance.settingsWidth}px`)
@@ -975,7 +1167,7 @@ async function loadFiles(path?: string): Promise<void> {
       row.addEventListener('dragend', () => {
         draggedDirectory = undefined
         row.classList.remove('is-dragging')
-        container.classList.remove('is-directory-drop-target')
+        terminalRoot.classList.remove('is-directory-drop-target')
       })
       fileList.append(row)
     }
@@ -1077,9 +1269,13 @@ async function openDirectoryBrowser(path?: string): Promise<void> {
 
 function clearSemanticEntries(): void {
   lastSemanticRender = null
+  semanticColumns = []
+  openHeaderKey = ''
   semanticHeader.className = 'semantic-header'
   semanticHeader.replaceChildren()
   semanticLegend.hidden = true
+  semanticInlineNote.hidden = true
+  semanticInlineNote.textContent = ''
 }
 
 function parseCsv(text: string): string[][] {
@@ -1215,16 +1411,16 @@ function changeTerminalDirectory(path: string): void {
 let draggedDirectory: string | undefined
 
 function isTerminalDropTarget(target: EventTarget | null): boolean {
-  return target instanceof Node && container.contains(target)
+  return target instanceof Node && terminalRoot.contains(target)
 }
 
 document.addEventListener('dragover', (event) => {
   if (!draggedDirectory || !isTerminalDropTarget(event.target)) {
-    container.classList.remove('is-directory-drop-target')
+    terminalRoot.classList.remove('is-directory-drop-target')
     return
   }
   event.preventDefault()
-  container.classList.add('is-directory-drop-target')
+  terminalRoot.classList.add('is-directory-drop-target')
   if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
 }, true)
 
@@ -1234,7 +1430,7 @@ document.addEventListener('drop', (event) => {
   if (!path || !isTerminalDropTarget(event.target)) return
   event.preventDefault()
   event.stopPropagation()
-  container.classList.remove('is-directory-drop-target')
+  terminalRoot.classList.remove('is-directory-drop-target')
   draggedDirectory = undefined
   changeTerminalDirectory(path)
 }, true)
@@ -1332,38 +1528,108 @@ function terminalTextOrigin(): number {
   return screen.getBoundingClientRect().left - semanticHeader.getBoundingClientRect().left
 }
 
-function paintAlignedLine(text: string, className: string): HTMLElement {
-  const line = document.createElement('div')
-  line.className = className
+let semanticColumns: ColumnDef[] = []
+let openHeaderKey = ''
+
+function matchedFontSize(size: number, family: string, cell: number): string {
+  if (cell < 4) return `${size}px`
+  const probe = document.createElement('span')
+  probe.textContent = '0000000000'
+  probe.style.cssText = `position:absolute;visibility:hidden;white-space:pre;font:400 ${size}px ${family}`
+  document.body.append(probe)
+  const advance = probe.getBoundingClientRect().width / 10
+  probe.remove()
+  if (advance > 0 && Math.abs(advance - cell) / cell > 0.03) return `${(size * cell) / advance}px`
+  return `${size}px`
+}
+
+function appendCells(parent: HTMLElement, value: string, cell: number): void {
+  if (cell < 4) {
+    parent.append(document.createTextNode(value))
+    return
+  }
+  for (const character of value) {
+    const glyph = document.createElement('span')
+    glyph.className = 'semantic-header-glyph'
+    glyph.textContent = character
+    glyph.style.width = `${displayWidth(character) * cell}px`
+    parent.append(glyph)
+  }
+}
+
+function paintHeaderRow(rendered: SemanticTableRender): HTMLElement {
+  const row = document.createElement('div')
+  row.className = 'semantic-header-row'
   const family = terminal.options.fontFamily || 'monospace'
   const size = terminal.options.fontSize || 13
   const cell = terminalCellWidth()
-  line.style.fontFamily = family
-  line.style.fontSize = `${size}px`
-  line.style.marginLeft = `${Math.max(0, terminalTextOrigin())}px`
-  if (cell < 4) {
-    line.textContent = text
-    return line
+  row.style.fontFamily = family
+  row.style.fontSize = matchedFontSize(size, family, cell)
+  const origin = Math.max(0, terminalTextOrigin())
+  row.style.marginLeft = `${origin}px`
+  semanticInlineNote.style.marginLeft = `${origin}px`
+  let consumed = 0
+  for (const segment of rendered.headerSegments) {
+    const gap = segment.start - consumed
+    if (gap > 0) appendCells(row, ' '.repeat(gap), cell)
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.className = 'semantic-header-cell'
+    button.dataset.key = segment.key
+    button.classList.toggle('is-active', segment.key === openHeaderKey)
+    button.setAttribute('aria-expanded', String(segment.key === openHeaderKey))
+    appendCells(button, segment.header, cell)
+    button.addEventListener('click', (event) => {
+      event.stopPropagation()
+      toggleHeaderNote(segment.key)
+    })
+    row.append(button)
+    consumed = segment.start + displayWidth(segment.header)
   }
-  for (const character of text) {
-    const glyph = document.createElement('span')
-    const cells = Math.max(1, displayWidth(character))
-    glyph.textContent = character
-    glyph.style.width = `${cells * cell}px`
-    glyph.style.flex = `0 0 ${cells * cell}px`
-    line.append(glyph)
+  return row
+}
+
+function showHeaderNote(key: string): void {
+  const column = semanticColumns.find((item) => item.key === key)
+  openHeaderKey = column ? key : ''
+  for (const button of semanticHeader.querySelectorAll<HTMLButtonElement>('.semantic-header-cell')) {
+    const active = button.dataset.key === openHeaderKey
+    button.classList.toggle('is-active', active)
+    button.setAttribute('aria-expanded', String(active))
   }
-  return line
+  if (!column) {
+    semanticInlineNote.hidden = true
+    semanticInlineNote.textContent = ''
+    return
+  }
+  semanticInlineNote.hidden = false
+  semanticInlineNote.textContent = `${column.header} (${column.key}) ${column.detailed ?? column.description}`
+}
+
+function toggleHeaderNote(key: string): void {
+  const wasOpen = !semanticInlineNote.hidden
+  if (openHeaderKey === key) showHeaderNote('')
+  else {
+    semanticDetails.hidden = true
+    semanticToggle.setAttribute('aria-expanded', 'false')
+    showHeaderNote(key)
+  }
+  if (wasOpen !== !semanticInlineNote.hidden) fitTerminalAfterHeaderNote()
+}
+
+function fitTerminalAfterHeaderNote(): void {
+  requestAnimationFrame(() => {
+    fitAddon.fit()
+    resizeActiveTerminal()
+  })
 }
 
 function renderSemanticColumns(rendered: SemanticTableRender): void {
   lastSemanticRender = rendered
   semanticHeader.className = 'semantic-columns'
-  semanticHeader.replaceChildren(
-    paintAlignedLine(rendered.headerText, 'semantic-line'),
-    paintAlignedLine(rendered.legendText, 'semantic-line is-legend')
-  )
+  semanticHeader.replaceChildren(paintHeaderRow(rendered))
   semanticLegend.hidden = true
+  showHeaderNote(openHeaderKey)
 }
 
 function renderSemanticMetadata(
@@ -1372,6 +1638,13 @@ function renderSemanticMetadata(
   expanded: boolean,
   rawOutput: string
 ): void {
+  if (outputIncludesHeader(rawOutput, columns) && !expanded) {
+    clearSemanticEntries()
+    semanticBlock.hidden = true
+    return
+  }
+  semanticColumns = columns
+  if (!columns.some((column) => column.key === openHeaderKey)) openHeaderKey = ''
   const rendered = renderSemanticTable(columns, rows, expanded, rawOutput)
   renderSemanticColumns(rendered)
   semanticDetails.replaceChildren()
@@ -1403,6 +1676,7 @@ function toggleSemanticDetails(): void {
   const expanded = semanticDetails.hidden
   semanticDetails.hidden = !expanded
   semanticToggle.setAttribute('aria-expanded', String(expanded))
+  if (expanded) showHeaderNote('')
   relayoutTerminal()
 }
 
@@ -1462,11 +1736,13 @@ function revealPrompt(): void {
 
 async function showWorkspaceContext(command: string, relayout = true): Promise<void> {
   try {
-    const context = await window.unixbridge.workspaceContext()
-    contextRuntime.textContent = context.runtime
-    showDirectoryChip(getActiveSession()?.currentDirectory || context.directory)
+    const session = getActiveSession()
+    const context = await window.unixbridge.workspaceContext(session?.currentDirectory)
+    contextRuntime.textContent = session?.nodeLabel || context.runtime
+    showDirectoryChip(session?.currentDirectory || context.directory)
     contextBranch.textContent = context.branch ?? '无 Git 分支'
-    contextChanges.textContent = `${context.changes} changes`
+    contextBranch.dataset.branch = context.branch ?? ''
+    contextChanges.textContent = formatChangeChip(context.changes, context.insertions, context.deletions)
     contextCommand.textContent = command
     const becameVisible = terminalContext.hidden
     terminalContext.hidden = false
@@ -1525,10 +1801,24 @@ function renderCompletions(): void {
 }
 
 function refreshCompletions(input: string): void {
-  completionItems = suggestCommands(input, commandHistory)
+  completionItems = suggestCommands(input, commandHistory, {
+    commands: appearance.commandCompletion,
+    history: appearance.historySuggestions
+  })
   completionIndex = 0
   renderCompletions()
 }
+
+function toggleInputAssist(kind: 'commandCompletion' | 'historySuggestions'): void {
+  appearance[kind] = !appearance[kind]
+  saveAndApplyAppearance()
+  const session = getActiveSession()
+  if (session) refreshCompletions(session.inputBuffer)
+  else hideCompletions()
+}
+
+commandCompletionButton.addEventListener('click', () => toggleInputAssist('commandCompletion'))
+historySuggestionsButton.addEventListener('click', () => toggleInputAssist('historySuggestions'))
 
 function acceptCompletion(command: string): void {
   const session = getActiveSession()
@@ -1572,11 +1862,20 @@ terminal.onData((data) => {
   let submittedCommand = ''
   let structured: StructuredRequest | undefined
   if (data === '\r' || data === '\n') {
+    if (openHeaderKey) {
+      showHeaderNote('')
+      fitTerminalAfterHeaderNote()
+    }
     submittedCommand = session.inputBuffer.trim()
     structured = submittedCommand
       ? parseStructuredRequest(submittedCommand, session.platform)
       : undefined
     if (structured?.expanded) outbound = `\u007f${data}`
+    const translated =
+      session.platform === 'win32' && submittedCommand ? translate(submittedCommand, 'windows') : undefined
+    if (translated?.changed) {
+      outbound = `${'\u007f'.repeat(session.inputBuffer.length)}${translated.shellLine}\r`
+    }
   }
   window.unixbridge.write(session.id, outbound)
   if (data.startsWith('\u001b')) return
@@ -1616,6 +1915,10 @@ const resizeObserver = new ResizeObserver(() => {
   })
 })
 resizeObserver.observe(container)
+window.addEventListener('resize', () => {
+  saveAndApplyAppearance()
+  requestAnimationFrame(() => saveAndApplyAppearance())
+})
 
 function scheduleSshReconnect(session: UiSession): boolean {
   if (!session.ssh || session.disposed || session.reconnects >= 6) return false
@@ -1635,24 +1938,48 @@ function sshLabel(target: SshTarget): string {
   return `ssh ${target.user ? `${target.user}@` : ''}${target.host}`
 }
 
-function persistedSessions(): Array<{
-  id: string
-  name: string
-  color: string
-  kind: 'local' | 'ssh'
-  ssh?: SshTarget
-}> {
-  return [...uiSessions.values()].map((session) => ({
-    id: session.id,
-    name: session.name,
-    color: session.color,
-    kind: session.ssh ? 'ssh' : 'local',
-    ...(session.ssh ? { ssh: session.ssh } : {})
-  }))
+function syncSessionGroupOptions(): void {
+  const selected = sessionGroupInput.value
+  sessionGroupInput.replaceChildren()
+  const empty = document.createElement('option')
+  empty.value = ''
+  empty.textContent = '未分组'
+  sessionGroupInput.append(empty)
+  for (const group of sessionGroups) {
+    const option = document.createElement('option')
+    option.value = group.id
+    option.textContent = group.name
+    sessionGroupInput.append(option)
+  }
+  sessionGroupInput.value = sessionGroups.some((group) => group.id === selected) ? selected : ''
+}
+
+function persistedWorkspace(): {
+  sessions: Array<{
+    id: string
+    name: string
+    color: string
+    kind: 'local' | 'ssh'
+    ssh?: SshTarget
+    groupId?: string
+  }>
+  groups: StoredGroup[]
+} {
+  return {
+    sessions: [...uiSessions.values()].map((session) => ({
+      id: session.id,
+      name: session.name,
+      color: session.color,
+      kind: session.ssh ? 'ssh' as const : 'local' as const,
+      ...(session.ssh ? { ssh: session.ssh } : {}),
+      ...(session.groupId ? { groupId: session.groupId } : {})
+    })),
+    groups: sessionGroups.map((group) => ({ id: group.id, name: group.name, color: group.color }))
+  }
 }
 
 function rememberSessions(): void {
-  void window.unixbridge.saveSessions(persistedSessions()).catch(() => undefined)
+  void window.unixbridge.saveSessions(persistedWorkspace()).catch(() => undefined)
 }
 
 function setConnectionState(
@@ -1712,6 +2039,7 @@ async function startSession(options?: {
   id?: string
   name?: string
   color?: string
+  groupId?: string
 }): Promise<void> {
   sessionSequence += 1
   const sessionId =
@@ -1733,7 +2061,8 @@ async function startSession(options?: {
     inputBuffer: '',
     disposed: false,
     reconnects: 0,
-    ...(ssh ? { ssh } : {})
+    ...(ssh ? { ssh } : {}),
+    ...(options?.groupId ? { groupId: options.groupId } : {})
   }
   uiSessions.set(sessionId, session)
   activeSessionId = sessionId
@@ -1747,17 +2076,23 @@ async function startSession(options?: {
 }
 
 async function restoreSessions(): Promise<void> {
-  const stored = await window.unixbridge.loadSessions().catch(() => [])
-  if (stored.length === 0) {
+  const stored = await window.unixbridge.loadSessions().catch(() => ({ sessions: [], groups: [] }))
+  sessionGroups.splice(
+    0,
+    sessionGroups.length,
+    ...stored.groups.map((group) => ({ ...group, collapsed: false }))
+  )
+  if (stored.sessions.length === 0) {
     await startSession()
     return
   }
-  for (const item of stored) {
+  for (const item of stored.sessions) {
     await startSession({
       id: item.id,
       name: item.name,
       color: item.color,
-      ...(item.ssh ? { ssh: item.ssh } : {})
+      ...(item.ssh ? { ssh: item.ssh } : {}),
+      ...(item.groupId ? { groupId: item.groupId } : {})
     })
   }
 }
@@ -1808,7 +2143,244 @@ commandSearch.addEventListener('keydown', (event) => {
   terminal.focus()
 })
 
-element<HTMLElement>('#new-session').addEventListener('click', () => void startSession())
+function closeContextPopover(): void {
+  contextPopover.hidden = true
+  contextPopoverKind = ''
+  contextPopoverSearch.hidden = true
+  for (const chip of [contextRuntime, contextBranch, contextChanges]) {
+    chip.classList.remove('is-open')
+  }
+}
+
+let sessionMenuGroupId = ''
+
+function closeNewSessionMenu(): void {
+  newSessionMenu.hidden = true
+  delete newSessionMenu.dataset.anchor
+  sessionMenuGroupId = ''
+  newSessionMenu.style.position = ''
+  newSessionMenu.style.top = ''
+  newSessionMenu.style.left = ''
+  newSessionMenu.style.right = ''
+  element<HTMLButtonElement>('#new-session').setAttribute('aria-expanded', 'false')
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-session-menu]')) {
+    button.setAttribute('aria-expanded', 'false')
+  }
+}
+
+function openSessionMenu(anchor: HTMLElement, groupId = ''): void {
+  const anchorId = anchor.dataset.sessionMenu || anchor.id
+  if (!newSessionMenu.hidden && newSessionMenu.dataset.anchor === anchorId) {
+    closeNewSessionMenu()
+    return
+  }
+  closeContextPopover()
+  closeDirectoryBrowser()
+  closeNewSessionMenu()
+  sessionMenuGroupId = groupId
+  const rect = anchor.getBoundingClientRect()
+  newSessionMenu.hidden = false
+  newSessionMenu.dataset.anchor = anchorId
+  newSessionMenu.style.position = 'fixed'
+  newSessionMenu.style.top = `${rect.bottom + 6}px`
+  newSessionMenu.style.right = 'auto'
+  newSessionMenu.style.left = `${Math.min(window.innerWidth - 176, Math.max(8, rect.right - 168))}px`
+  anchor.setAttribute('aria-expanded', 'true')
+}
+
+function placeContextPopover(anchor: HTMLElement): void {
+  const host = terminalContext.parentElement?.getBoundingClientRect()
+  const chip = anchor.getBoundingClientRect()
+  if (!host) return
+  contextPopover.style.left = `${Math.max(8, chip.left - host.left)}px`
+  contextPopover.style.top = `${chip.bottom - host.top + 6}px`
+}
+
+function showContextMessage(message: string): void {
+  contextPopoverList.replaceChildren()
+  const empty = document.createElement('div')
+  empty.className = 'context-empty'
+  empty.textContent = message
+  contextPopoverList.append(empty)
+}
+
+function writeShellLine(command: string): void {
+  const session = getActiveSession()
+  if (!session) return
+  session.inputBuffer = ''
+  window.unixbridge.write(session.id, `${command}\r`)
+  closeContextPopover()
+  terminal.focus()
+}
+
+function openContextPopover(kind: 'node' | 'branch' | 'changes', anchor: HTMLElement): void {
+  const opening = contextPopover.hidden || contextPopoverKind !== kind
+  closeDirectoryBrowser()
+  closeNewSessionMenu()
+  if (!opening) {
+    closeContextPopover()
+    return
+  }
+  contextPopoverKind = kind
+  contextPopover.hidden = false
+  contextPopoverSearch.hidden = kind !== 'branch'
+  contextPopoverSearch.value = ''
+  for (const chip of [contextRuntime, contextBranch, contextChanges]) {
+    chip.classList.toggle('is-open', chip === anchor)
+  }
+  placeContextPopover(anchor)
+  showContextMessage('正在读取…')
+  if (kind === 'node') void showNodeRuntimes()
+  else void showGitDetails(kind)
+}
+
+async function showNodeRuntimes(): Promise<void> {
+  const session = getActiveSession()
+  if (session?.ssh) {
+    showContextMessage('SSH 会话请在远端终端里切换 Node。')
+    return
+  }
+  const runtimes = await window.unixbridge.nodeRuntimes().catch(() => [])
+  contextPopoverList.replaceChildren()
+  if (runtimes.length === 0) {
+    showContextMessage('没有找到已安装的 Node 版本。')
+    return
+  }
+  for (const runtime of runtimes) contextPopoverList.append(nodeRuntimeButton(runtime))
+}
+
+function nodeRuntimeButton(runtime: NodeRuntime): HTMLButtonElement {
+  const button = document.createElement('button')
+  button.type = 'button'
+  button.classList.toggle('is-current', runtime.current)
+  const version = document.createElement('strong')
+  version.textContent = `v${runtime.version}`
+  const source = document.createElement('small')
+  source.textContent = runtime.current ? `${runtime.source} · 当前` : runtime.source
+  button.append(version, source)
+  button.addEventListener('click', () => {
+    const session = getActiveSession()
+    if (!session || !runtime.binDir || runtime.binDir.includes('\n') || runtime.binDir.includes('\0')) {
+      closeContextPopover()
+      return
+    }
+    session.nodeLabel = `Node v${runtime.version}`
+    contextRuntime.textContent = session.nodeLabel
+    const pathCommand =
+      session.platform === 'win32'
+        ? `$env:Path = ${shellQuote(runtime.binDir)} + ';' + $env:Path; Write-Output ("Now using node " + (node -v) + " (npm " + (npm -v) + ")")`
+        : `export PATH=${shellQuote(runtime.binDir)}:"$PATH" && hash -r && printf 'Now using node %s (npm %s)\\n' "$(node -v 2>/dev/null)" "$(npm -v 2>/dev/null || printf unknown)"`
+    writeShellLine(pathCommand)
+  })
+  return button
+}
+
+async function showGitDetails(kind: 'branch' | 'changes'): Promise<void> {
+  const session = getActiveSession()
+  if (session?.ssh) {
+    showContextMessage('SSH 会话请在远端终端里查看 Git。')
+    return
+  }
+  const directory = session?.currentDirectory || contextDirectory.dataset.path
+  const details = await window.unixbridge.workspaceGit(directory).catch(() => null)
+  latestGitDetails = details
+  if (!details || (!details.branch && details.branches.length === 0 && details.files.length === 0)) {
+    showContextMessage('当前目录不是 Git 仓库。')
+    return
+  }
+  if (kind === 'branch') renderBranchChoices(details)
+  else renderChangeChoices(details)
+}
+
+function renderBranchChoices(details: GitDetails): void {
+  const query = contextPopoverSearch.value.trim().toLowerCase()
+  const branches = details.branches.filter((branch) => branch.toLowerCase().includes(query))
+  contextPopoverList.replaceChildren()
+  if (branches.length === 0) {
+    showContextMessage('没有匹配的分支。')
+    return
+  }
+  for (const branch of branches) {
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.classList.toggle('is-current', branch === details.branch)
+    button.textContent = branch
+    button.addEventListener('click', () => {
+      if (!isSafeBranchName(branch) || branch === details.branch) {
+        closeContextPopover()
+        return
+      }
+      writeShellLine(`git switch -- ${shellQuote(branch)}`)
+    })
+    contextPopoverList.append(button)
+  }
+}
+
+function renderChangeChoices(details: GitDetails): void {
+  contextPopoverList.replaceChildren()
+  if (details.files.length === 0) {
+    showContextMessage('工作区没有未提交的改动。')
+    return
+  }
+  for (const file of details.files) {
+    const button = document.createElement('button')
+    button.type = 'button'
+    const status = document.createElement('small')
+    status.textContent = file.status
+    const name = document.createElement('span')
+    name.textContent = file.path
+    button.append(status, name)
+    button.addEventListener('click', () => {
+      const separator = details.directory.includes('\\') ? '\\' : '/'
+      const fullPath = `${details.directory.replace(/[\\/]$/, '')}${separator}${file.path}`
+      closeContextPopover()
+      void openPreview(fullPath)
+    })
+    contextPopoverList.append(button)
+  }
+}
+
+function createSessionGroup(): void {
+  const rawId = window.crypto.randomUUID?.() ?? `group${Date.now()}`
+  const id = rawId.replace(/[^a-zA-Z0-9-]/g, '').slice(0, 80)
+  const groupId = id.length >= 8 ? id : `group${Date.now()}`
+  const color = groupColors[sessionGroups.length % groupColors.length] ?? '#8f83d8'
+  sessionGroups.push({
+    id: groupId,
+    name: `分组 ${sessionGroups.length + 1}`,
+    color,
+    collapsed: false
+  })
+  const active = getActiveSession()
+  if (active && !active.groupId) {
+    active.groupId = groupId
+    active.color = color
+    syncActiveSessionUi()
+  }
+  editingGroupId = groupId
+  closeNewSessionMenu()
+  rememberSessions()
+  renderSessionList()
+}
+
+element<HTMLButtonElement>('#new-session').addEventListener('click', (event) => {
+  event.stopPropagation()
+  openSessionMenu(element<HTMLButtonElement>('#new-session'))
+})
+element<HTMLButtonElement>('#create-terminal').addEventListener('click', () => {
+  const groupId = sessionMenuGroupId
+  closeNewSessionMenu()
+  const active = getActiveSession()
+  const group = sessionGroups.find((item) => item.id === (groupId || active?.groupId || editingGroupId))
+  void startSession({
+    ...(group ? { groupId: group.id, color: group.color } : {})
+  })
+})
+element<HTMLButtonElement>('#create-group').addEventListener('click', (event) => {
+  event.stopPropagation()
+  createSessionGroup()
+})
+newSessionMenu.addEventListener('click', (event) => event.stopPropagation())
 element<HTMLElement>('#clear-terminal').addEventListener('click', () => {
   const session = getActiveSession()
   if (!session) return
@@ -1861,9 +2433,45 @@ document.addEventListener('click', () => {
   setSessionEditorOpen(false)
   sshForm.hidden = true
   closeDirectoryBrowser()
+  closeContextPopover()
+  closeNewSessionMenu()
+  if (openHeaderKey) {
+    showHeaderNote('')
+    fitTerminalAfterHeaderNote()
+  }
+  if (editingGroupId) {
+    editingGroupId = ''
+    renderSessionList()
+  }
+})
+contextRuntime.addEventListener('click', (event) => {
+  event.stopPropagation()
+  openContextPopover('node', contextRuntime)
+})
+contextBranch.addEventListener('click', (event) => {
+  event.stopPropagation()
+  openContextPopover('branch', contextBranch)
+})
+contextChanges.addEventListener('click', (event) => {
+  event.stopPropagation()
+  openContextPopover('changes', contextChanges)
+})
+contextPopover.addEventListener('click', (event) => event.stopPropagation())
+contextPopoverSearch.addEventListener('input', () => {
+  if (contextPopoverKind !== 'branch' || !latestGitDetails) return
+  renderBranchChoices(latestGitDetails)
+})
+sessionGroupInput.addEventListener('change', () => {
+  const session = getActiveSession()
+  if (!session) return
+  if (sessionGroupInput.value) session.groupId = sessionGroupInput.value
+  else delete session.groupId
+  rememberSessions()
+  renderSessionList()
 })
 contextDirectory.addEventListener('click', (event) => {
   event.stopPropagation()
+  closeContextPopover()
   if (!directoryBrowser.hidden) {
     closeDirectoryBrowser()
     return
@@ -1871,12 +2479,27 @@ contextDirectory.addEventListener('click', (event) => {
   void openDirectoryBrowser(contextDirectory.dataset.path || currentFilePath)
 })
 directoryBrowser.addEventListener('click', (event) => event.stopPropagation())
-element<HTMLElement>('#sidebar-toggle').addEventListener('click', () => {
-  document.body.classList.toggle('sidebar-collapsed')
+function setSidebarCollapsed(collapsed: boolean): void {
+  document.body.classList.toggle('sidebar-collapsed', collapsed)
+  const toggle = element<HTMLButtonElement>('#sidebar-toggle')
+  const reveal = element<HTMLButtonElement>('#sidebar-reveal')
+  toggle.setAttribute('aria-expanded', String(!collapsed))
+  toggle.setAttribute('aria-label', collapsed ? '展开侧边栏' : '收起侧边栏')
+  reveal.hidden = !collapsed
   requestAnimationFrame(() => {
     fitAddon.fit()
     resizeActiveTerminal()
+    if (lastSemanticRender) renderSemanticColumns(lastSemanticRender)
   })
+}
+
+element<HTMLButtonElement>('#sidebar-toggle').addEventListener('click', (event) => {
+  event.stopPropagation()
+  setSidebarCollapsed(!document.body.classList.contains('sidebar-collapsed'))
+})
+element<HTMLButtonElement>('#sidebar-reveal').addEventListener('click', (event) => {
+  event.stopPropagation()
+  setSidebarCollapsed(false)
 })
 element<HTMLElement>('#mobile-menu').addEventListener('click', () => {
   document.body.classList.toggle('sidebar-open')

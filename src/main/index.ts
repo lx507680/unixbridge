@@ -8,7 +8,8 @@ import { localeEnv } from '../core/locale'
 import { resolveHomePath } from '../core/path'
 import { previewMime } from '../core/preview/kind'
 import { sshLaunchArguments, type SshTarget } from '../core/ssh/target'
-import { registerWorkspaceIpc, sanitizeStoredSessions, type StoredSession } from './workspace-ipc'
+import { sanitizeStoredWorkspace, type StoredWorkspace } from '../core/workspace/stored'
+import { registerWorkspaceIpc } from './workspace-ipc'
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -55,18 +56,18 @@ function sessionsFile(): string {
   return join(app.getPath('userData'), 'sessions.json')
 }
 
-async function loadStoredSessions(): Promise<StoredSession[]> {
+async function loadStoredSessions(): Promise<StoredWorkspace> {
   try {
-    return sanitizeStoredSessions(JSON.parse(await readFile(sessionsFile(), 'utf8')))
+    return sanitizeStoredWorkspace(JSON.parse(await readFile(sessionsFile(), 'utf8')))
   } catch {
-    return []
+    return { sessions: [], groups: [] }
   }
 }
 
-async function saveStoredSessions(input: unknown): Promise<StoredSession[]> {
-  const sessions = sanitizeStoredSessions(input)
-  await writeFile(sessionsFile(), JSON.stringify(sessions))
-  return sessions
+async function saveStoredSessions(input: unknown): Promise<StoredWorkspace> {
+  const workspace = sanitizeStoredWorkspace(input)
+  await writeFile(sessionsFile(), JSON.stringify(workspace))
+  return workspace
 }
 
 function spawnShell(

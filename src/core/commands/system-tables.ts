@@ -65,9 +65,10 @@ async function captureLs(args: string[], cwd: string): Promise<string> {
   return renderLsText(execution)
 }
 
-async function capturePs(): Promise<string> {
+async function capturePs(args: string[]): Promise<string> {
   if (process.platform !== 'win32') {
-    const { stdout } = await execFileAsync('ps', ['aux'], {
+    const safeArgs = args.filter((arg) => /^[a-zA-Z0-9-]+$/.test(arg)).slice(0, 8)
+    const { stdout } = await execFileAsync('ps', safeArgs, {
       env: localeEnv(),
       timeout: 10_000,
       maxBuffer: 4 * 1024 * 1024
@@ -122,7 +123,7 @@ async function capturePlan(
   shellLine?: string
 ): Promise<string> {
   if (command === 'ls') return captureLs(args, cwd)
-  if (command === 'ps') return capturePs()
+  if (command === 'ps') return capturePs(args)
   if (command === 'df') return captureDf(args)
   if (command === 'tasklist') return captureTasklist()
   if (command === 'netstat' && shellLine) return captureNetstat(shellLine)

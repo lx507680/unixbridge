@@ -43,6 +43,22 @@ describe('regex output adapters', () => {
     })
   })
 
+  it('parses the default ps columns instead of treating them as ps aux', () => {
+    const raw = [
+      '  PID TTY           TIME CMD',
+      '18127 ttys000    0:00.28 -zsh -g --no_rcs',
+      '20850 ttys001    0:00.22 npm run dev'
+    ].join('\n')
+    const rows = parsePsOutput(raw)
+    expect(rows[0]).toEqual({
+      PID: '18127',
+      TTY: 'ttys000',
+      TIME: '0:00.28',
+      COMMAND: '-zsh -g --no_rcs'
+    })
+    expect(rows[0]).not.toHaveProperty('%CPU')
+  })
+
   it('parses both Linux df rows and macOS inode columns', () => {
     const linux = 'My Disk   100G   50G    40G    56%    /Volumes/My Share'
     const mac = '/dev/disk3s1s1   460Gi    12Gi    38Gi    24%    459k  402M    0%   /'

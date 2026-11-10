@@ -17,4 +17,19 @@ describe('常用命令补全', () => {
   it('空输入不弹出补全', () => {
     expect(suggestCommands('   ', ['ls'])).toEqual([])
   })
+
+  it('可以分别关闭常用命令和历史命令', () => {
+    const historyOnly = suggestCommands('git ', ['git status', 'npm test'], {
+      commands: false,
+      history: true
+    })
+    expect(historyOnly.map((item) => item.command)).toEqual(['git status'])
+    expect(historyOnly[0]?.description).toBe('历史命令')
+
+    const commandsOnly = suggestCommands('git ', ['git status'], { commands: true, history: false })
+    expect(commandsOnly.map((item) => item.command)).toContain('git diff')
+    expect(commandsOnly.some((item) => item.description === '历史命令')).toBe(false)
+
+    expect(suggestCommands('git ', ['git status'], { commands: false, history: false })).toEqual([])
+  })
 })

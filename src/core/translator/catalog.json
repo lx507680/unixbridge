@@ -1,0 +1,61 @@
+{
+  "commands": [
+    {
+      "cmd": "ls",
+      "os": "macos",
+      "columns": ["权限", "链接", "所有者", "用户组", "大小", "修改时间", "名称"],
+      "desc": "mode: 类型与权限 · links: 硬链接数 · owner: 所属用户 · group: 所属组 · size: 字节/易读大小 · mtime: 最后修改 · name: 文件名"
+    },
+    {
+      "cmd": "ls",
+      "os": "linux",
+      "columns": ["权限", "链接", "所有者", "用户组", "大小", "修改时间", "名称"],
+      "desc": "mode: 类型与权限 · links: 硬链接数 · owner: 所属用户 · group: 所属组 · size: 字节/易读大小 · mtime: 最后修改 · name: 文件名"
+    },
+    {
+      "cmd": "ls",
+      "os": "windows",
+      "columns": ["权限", "链接", "所有者", "用户组", "大小", "修改时间", "名称"],
+      "desc": "mode: 类型与权限 · links: 硬链接数 · owner: 所属用户 · group: 所属组 · size: 字节/易读大小 · mtime: 最后修改 · name: 文件名",
+      "powershell": "Get-ChildItem"
+    },
+    {
+      "cmd": "grep",
+      "os": "macos",
+      "columns": ["文件", "行号", "内容"],
+      "desc": "file: 匹配文件 · line: 行号 · text: 匹配行内容"
+    },
+    {
+      "cmd": "grep",
+      "os": "linux",
+      "columns": ["文件", "行号", "内容"],
+      "desc": "file: 匹配文件 · line: 行号 · text: 匹配行内容"
+    },
+    {
+      "cmd": "grep",
+      "os": "windows",
+      "columns": ["文件", "行号", "内容"],
+      "desc": "file: 匹配文件 · line: 行号 · text: 匹配行内容",
+      "powershell": "Select-String"
+    },
+    {
+      "cmd": "find",
+      "os": "macos",
+      "columns": ["路径"],
+      "desc": "path: 匹配到的文件或目录路径"
+    },
+    {
+      "cmd": "find",
+      "os": "linux",
+      "columns": ["路径"],
+      "desc": "path: 匹配到的文件或目录路径"
+    },
+    {
+      "cmd": "find",
+      "os": "windows",
+      "columns": ["路径"],
+      "desc": "path: 匹配到的文件或目录路径",
+      "powershell": "Get-ChildItem"
+    }
+  ]
+}

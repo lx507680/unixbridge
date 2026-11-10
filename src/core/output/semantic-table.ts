@@ -24,8 +24,15 @@ export interface OutputColumnLayout {
   trailing: number
 }
 
+export interface HeaderSegment {
+  key: string
+  header: string
+  start: number
+}
+
 export interface SemanticTableRender {
   headerText: string
+  headerSegments: HeaderSegment[]
   legendText: string
   text: string
   details: string
@@ -154,6 +161,13 @@ function fallbackLayout(
   })
 }
 
+export function outputIncludesHeader(rawOutput: string, columns: readonly ColumnDef[]): boolean {
+  const first = rawOutput.split(/\r?\n/).find((line) => line.trim().length > 0) ?? ''
+  if (!first || columns.length === 0) return false
+  const hits = columns.filter((column) => first.includes(column.header)).length
+  return hits >= Math.min(2, columns.length)
+}
+
 export function layoutColumns(
   columns: readonly ColumnDef[],
   rows: readonly SemanticRow[],
@@ -162,20 +176,46 @@ export function layoutColumns(
   return measureOutputColumns(columns, rows, rawOutput) ?? fallbackLayout(columns, rows)
 }
 
-function renderAlignedLine(layout: readonly OutputColumnLayout[], field: 'header' | 'description'): string {
+function renderAlignedLine(layout: readonly OutputColumnLayout[]): string {
   let line = ''
   let cursor = 0
   for (const column of layout) {
     const gap = column.start - cursor
     if (gap > 0) line += ' '.repeat(gap)
-    const source = field === 'header' ? column.header : column.description
-    const align = field === 'description' ? 'start' : column.align
-    const fitted = fitCell(source, column.contentWidth, align)
+    const fitted = fitCell(column.description, column.contentWidth, 'start')
     const spacer = ' '.repeat(column.trailing)
     line += `${fitted}${spacer}`
     cursor = column.start + displayWidth(fitted) + column.trailing
   }
   return line.trimEnd()
+}
+
+function renderHeaderLine(layout: readonly OutputColumnLayout[]): { text: string; segments: HeaderSegment[] } {
+  const placed: Array<{ column: OutputColumnLayout; start: number }> = []
+  let cursor = 0
+  for (const [index, column] of layout.entries()) {
+    const width = displayWidth(column.header)
+    const nextStart = layout[index + 1]?.start
+    let start = Math.max(column.start, cursor)
+    if (nextStart !== undefined && width > 0 && start + width >= nextStart) {
+      const shifted = nextStart - width - 1
+      if (shifted >= cursor) start = shifted
+    }
+    if (start < cursor) start = cursor
+    placed.push({ column, start })
+    cursor = start + width
+  }
+
+  let text = ''
+  let used = 0
+  const segments: HeaderSegment[] = []
+  for (const item of placed) {
+    if (item.start > used) text += ' '.repeat(item.start - used)
+    text += item.column.header
+    used = item.start + displayWidth(item.column.header)
+    segments.push({ key: item.column.key, header: item.column.header, start: item.start })
+  }
+  return { text: text.trimEnd(), segments }
 }
 
 function renderDataLine(layout: readonly OutputColumnLayout[], cells: readonly string[]): string {
@@ -198,14 +238,16 @@ export function renderSemanticTable(
   rawOutput = ''
 ): SemanticTableRender {
   const layout = layoutColumns(columns, rows, rawOutput)
-  const headerText = renderAlignedLine(layout, 'header')
-  const legendText = renderAlignedLine(layout, 'description')
+  const header = renderHeaderLine(layout)
+  const headerText = header.text
+  const legendText = renderAlignedLine(layout)
   const data = rows.map((row) =>
     renderDataLine(layout, columns.map((column) => String(row[column.key] ?? '')))
   )
   const details = renderSemanticDetails(columns)
   return {
     headerText,
+    headerSegments: header.segments,
     legendText,
     layout,
     text: [
