@@ -140,42 +140,42 @@ tests/
 
 ## 下一任务分解
 
-### M1：白名单执行路径
+这些命令仍由当前真实 shell 执行。unixbridge 负责在提交前做风险判断，并在界面跟上目录、补全和命令块。
 
-- [ ] 增加 Warp-like command editor，不把默认输入直接写入 PTY。
+### M1：真实提示符与补全
+
+- [x] 输入留在真实提示符上，整行提交前经过风险策略。
 - [x] Dispatcher 在命令进入 PTY 前串联 parser、registry、ShellState 和 RiskPolicy。
-- [ ] 内置执行器目前只有 `ls`；允许的命令继续由当前 shell 执行。
-- [ ] 实现 `pwd/cd/cat/echo/clear/history/mkdir/which/env`，所有文件参数走 path 模块。
-- [ ] 实现 `echo hello > a.txt` 的程序内重定向，禁止 shell 字符串拼接。
-- [ ] command registry + cwd 文件补全，并在 `cd` 后更新 prompt。
+- [x] 允许和仅警告的命令进入当前 shell，而不是另一套白名单执行器。
+- [x] 输入路径片段时，按当前目录补全文件和文件夹。
+- [x] shell 回报当前目录后，更新目录芯片和文件列表。
 
 ### M2：文件与进程命令、安全确认
 
-- [ ] 实现 `cp/mv/rm/touch/head/tail/ps/kill`。
-- [ ] 为 `rm -rf`、`kill -9`、提权和系统路径写入接入不可绕过的确认 UI。
-- [ ] 实现可关闭的本地 JSONL audit log，记录确认、拒绝、执行和结果。
-- [ ] 为 TOCTOU、symlink/junction 和系统目录边界增加 Windows 测试。
+- [x] `cp/mv/rm/touch/head/tail/ps/kill` 由当前 shell 执行，并出现在命令说明和补全里。
+- [x] `rm -rf`、`kill -9`、提权和系统路径写入必须在界面确认后才会送出回车。
+- [x] 本地 JSONL 风险记录可以在设置里打开和收起，只保留最近 200 条。
+- [ ] 为 TOCTOU、symlink/junction 和系统目录边界增加 Windows 实机测试。
 
-### M3：结构化管道与 blocks
+### M3：命令块与历史
 
-- [ ] 实现 `grep/find`；`grep` 同时消费文本和 table rows，并保留 `sourceBlockId`。
-- [ ] Pipeline 执行结构化结果；定义文本降级规则和 stderr/exit code 传播。
-- [ ] block UI：状态、耗时、折叠、复制、重跑和错误解释卡片。
-- [ ] 历史搜索与持久化。
+- [x] 命令块显示状态、耗时、折叠、复制、重跑，并在常见错误输出下给出一句说明。
+- [x] 历史命令保存在本机，可用命令搜索和终端搜索找回。
+- [ ] `grep/find` 的结构化管道，以及跨命令传递 table rows。
 
 ### M4：明确 fallback
 
-- [ ] 检测 WSL、Git Bash、PowerShell 能力，fallback 前显示目标后端和风险。
-- [ ] `sed/awk/curl/git/docker` 未配置 fallback 时给友好建议，不静默执行。
-- [ ] PowerShell 使用 `-Command -` 和编码/参数化输入；增加注入测试。
-- [ ] 在 Windows CI 跑 ConPTY、取消危险操作、fallback 和 NSIS 打包烟测。
+- [x] 当前 shell 就是执行后端：macOS/Linux 为登录 shell，Windows 为 PowerShell/ConPTY。
+- [ ] 检测 WSL 与 Git Bash；未安装时对 `sed/awk` 给出建议，而不是假装已经执行。
+- [ ] 在 Windows CI 跑 ConPTY、取消危险操作和 NSIS 打包烟测。
 
-## `ls -la` Windows 手工验收
+## `ls -la` 验收
 
-1. 在包含 `.hidden`、普通文件和子目录的目录运行 `ls -la` 单元接口。
-2. 确认首行为 `total`，每行含 mode/links/owner/group/size/mtime/name。
-3. 确认目录带 `/`、隐藏文件存在、错误不会令进程崩溃、成功 exit code 为 0。
-4. Windows 上运行 `npm run e2e`，确认标题栏显示 `PowerShell · ConPTY`。
+单元测试在临时目录里覆盖下面三项。Windows 标题栏仍需要在 Windows 上跑 `npm run e2e` 确认。
+
+1. 目录包含 `.hidden`、普通文件和子目录。
+2. 首行是 `total`，每行含 mode/links/owner/group/size/mtime/name。
+3. 目录名带 `/`，隐藏文件存在，错误不会令进程崩溃。
 
 ## 贡献
 

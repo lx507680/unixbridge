@@ -59,6 +59,7 @@ interface PtySession {
   remoteDirectory: string
   remoteDirectoryKnown: boolean
   osc7Carry: string
+  workingDirectory: string
   promptTimer?: NodeJS.Timeout
 }
 
@@ -251,6 +252,11 @@ async function recentAudit(): Promise<AuditRecord[]> {
   }
 }
 
+function publishDirectory(session: PtySession, sender: Electron.WebContents): void {
+  if (!session.workingDirectory || sender.isDestroyed()) return
+  sender.send('pty:directory', { sessionId: session.id, directory: session.workingDirectory })
+}
+
 function publishMode(session: PtySession, sender: Electron.WebContents, output = ''): void {
   if (!sender.isDestroyed()) {
     sender.send('pty:mode', {
@@ -388,6 +394,7 @@ function registerPtyIpc(): void {
         remoteDirectory: '~/',
         remoteDirectoryKnown: false,
         osc7Carry: '',
+        workingDirectory: '',
         ...(ssh ? { ssh } : {})
       }
       sessions.set(sessionId, session)
@@ -403,6 +410,11 @@ function registerPtyIpc(): void {
         if (remoteDirectory) {
           session.remoteDirectory = remoteDirectory
           session.remoteDirectoryKnown = true
+        }
+        const location = osc.locations.at(-1)
+        if (location && location !== session.workingDirectory) {
+          session.workingDirectory = location
+          publishDirectory(session, event.sender)
         }
         const wasCapturing = session.promptClosesCommand
         const collected = collectCommandOutput(session.commandOutput, wasCapturing, ready)

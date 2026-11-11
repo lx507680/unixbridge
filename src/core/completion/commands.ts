@@ -57,6 +57,41 @@ export interface SuggestOptions {
   history?: boolean
 }
 
+export function explainCommandProblem(output: string): string | undefined {
+  const line = output
+    .split('\n')
+    .map((item) => item.trim())
+    .find((item) =>
+      /command not found|No such file or directory|Permission denied|不是内部或外部命令|拒绝访问|找不到/i.test(item)
+    )
+  if (!line) return undefined
+  if (/command not found|不是内部或外部命令/i.test(line)) return '当前 shell 找不到这个命令。'
+  if (/No such file or directory|找不到/i.test(line)) return '路径不存在。'
+  if (/Permission denied|拒绝访问/i.test(line)) return '没有权限访问这个路径。'
+  return undefined
+}
+
+export function pathCompletionQuery(input: string): { parent: string; prefix: string } | undefined {
+  if (!input || /\s$/.test(input)) return undefined
+  const token = input.match(/\S+$/)?.[0]
+  const command = input.trim().split(/\s+/)[0]
+  if (!token || !command || token === command) return undefined
+  if (!/[\\/]/.test(token) && !token.startsWith('.')) return undefined
+  const slash = Math.max(token.lastIndexOf('/'), token.lastIndexOf('\\'))
+  if (slash < 0) return { parent: '', prefix: token }
+  return {
+    parent: token.slice(0, slash) || (token.startsWith('/') || token.startsWith('\\') ? token.slice(0, 1) : ''),
+    prefix: token.slice(slash + 1)
+  }
+}
+
+export function joinCompletionDirectory(cwd: string, parent: string): string {
+  if (!parent) return cwd
+  if (parent.startsWith('/') || /^[A-Za-z]:[\\/]/.test(parent)) return parent
+  const separator = cwd.includes('\\') ? '\\' : '/'
+  return `${cwd.replace(/[\\/]$/, '')}${separator}${parent.replace(/^[\\/]/, '')}`
+}
+
 export function suggestCommands(
   input: string,
   history: readonly string[] = [],

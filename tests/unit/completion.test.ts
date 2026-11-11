@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { suggestCommands } from '../../src/core/completion/commands'
+import { explainCommandProblem, joinCompletionDirectory, pathCompletionQuery, suggestCommands } from '../../src/core/completion/commands'
 
 describe('常用命令补全', () => {
   it('按已输入前缀给出常用命令和历史命令', () => {
@@ -31,5 +31,18 @@ describe('常用命令补全', () => {
     expect(commandsOnly.some((item) => item.description === '历史命令')).toBe(false)
 
     expect(suggestCommands('git ', ['git status'], { commands: false, history: false })).toEqual([])
+  })
+
+  it('只在路径参数上补全当前目录', () => {
+    expect(pathCompletionQuery('git status')).toBeUndefined()
+    expect(pathCompletionQuery('cat src/re')).toEqual({ parent: 'src', prefix: 're' })
+    expect(joinCompletionDirectory('/work/app', 'src')).toBe('/work/app/src')
+    expect(joinCompletionDirectory('C:\\work', 'src')).toBe('C:\\work\\src')
+  })
+
+  it('把常见 shell 错误收成一句说明', () => {
+    expect(explainCommandProblem('zsh: command not found: typo')).toBe('当前 shell 找不到这个命令。')
+    expect(explainCommandProblem('ls: nope: No such file or directory')).toBe('路径不存在。')
+    expect(explainCommandProblem('total 8\na.txt')).toBeUndefined()
   })
 })

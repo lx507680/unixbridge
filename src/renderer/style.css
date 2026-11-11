@@ -3050,6 +3050,13 @@ button.context-chip.is-open {
   font-size: 12px;
 }
 
+.command-block-note {
+  margin: 0;
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .command-block-output {
   max-height: 96px;
   margin: 0;

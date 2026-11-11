@@ -5,7 +5,13 @@ import '@xterm/xterm/css/xterm.css'
 import { formatChangeChip, isSafeBranchName, shellQuote } from '../core/workspace/git'
 import type { GitDetails, NodeRuntime, StoredGroup } from '../preload'
 import { classifyFile, fileKindLabel, fileKindMark } from './file-icons'
-import { suggestCommands, type CommandSuggestion } from '../core/completion/commands'
+import {
+  explainCommandProblem,
+  joinCompletionDirectory,
+  pathCompletionQuery,
+  suggestCommands,
+  type CommandSuggestion
+} from '../core/completion/commands'
 import { translate } from '../core/translator'
 import { parseSshTarget, type SshTarget } from '../core/ssh/target'
 import { parseCommandLine } from '../core/parser'
@@ -1549,6 +1555,15 @@ const removeExitListener = window.unixbridge.onExit((sessionId, exitCode) => {
   renderSessionList()
   syncActiveSessionUi()
 })
+const removeDirectoryListener = window.unixbridge.onDirectory((sessionId, directory) => {
+  const session = uiSessions.get(sessionId)
+  if (!session || session.ssh || session.currentDirectory === directory) return
+  session.currentDirectory = directory
+  if (sessionId !== activeSessionId) return
+  workspaceSubtitle.textContent = directory
+  showDirectoryChip(directory)
+  void loadFiles(directory)
+})
 const removeModeListener = window.unixbridge.onMode((sessionId, mode, output) => {
   const session = uiSessions.get(sessionId)
   if (!session) return
@@ -1812,6 +1827,8 @@ function renderCompletions(): void {
   commandComplete.querySelector('.is-active')?.scrollIntoView({ block: 'nearest' })
 }
 
+let pathCompletionTicket = 0
+
 function refreshCompletions(input: string): void {
   completionItems = suggestCommands(input, commandHistory, {
     commands: appearance.commandCompletion,
@@ -1819,6 +1836,36 @@ function refreshCompletions(input: string): void {
   })
   completionIndex = 0
   renderCompletions()
+  void refreshPathCompletions(input)
+}
+
+async function refreshPathCompletions(input: string): Promise<void> {
+  const ticket = ++pathCompletionTicket
+  const session = getActiveSession()
+  const query = appearance.commandCompletion && session && !session.ssh ? pathCompletionQuery(input) : undefined
+  if (!session || !query) return
+  const cwd = session.currentDirectory || currentFilePath
+  if (!cwd) return
+  try {
+    const listing = await window.unixbridge.listFiles(joinCompletionDirectory(cwd, query.parent))
+    if (ticket !== pathCompletionTicket || getActiveSession()?.inputBuffer !== input) return
+    const prefix = query.prefix.toLocaleLowerCase()
+    const files = listing.items
+      .filter((item) => item.name.toLocaleLowerCase().startsWith(prefix))
+      .slice(0, 6)
+      .map((item) => {
+        const slash = Math.max(input.lastIndexOf('/'), input.lastIndexOf('\\'))
+        const separator = input.includes('\\') ? '\\' : '/'
+        const next = `${input.slice(0, slash + 1)}${item.name}${item.type === 'directory' ? separator : ''}`
+        return { command: next, description: item.type === 'directory' ? '当前目录' : '当前文件' }
+      })
+    if (files.length === 0) return
+    const seen = new Set(completionItems.map((item) => item.command))
+    completionItems = [...completionItems, ...files.filter((item) => !seen.has(item.command))].slice(0, 8)
+    renderCompletions()
+  } catch {
+    // 当前目录超出用户主目录时不提供路径补全。
+  }
 }
 
 function toggleInputAssist(kind: 'commandCompletion' | 'historySuggestions'): void {
@@ -1916,8 +1963,20 @@ function beginCommandBlock(session: UiSession, command: string): void {
       }, 1200)
     })
   })
-  actions.append(time, copy)
+  const rerun = document.createElement('button')
+  rerun.type = 'button'
+  rerun.textContent = '重跑'
+  rerun.addEventListener('click', () => {
+    if (session.inputMode !== 'prompt' || session.id !== activeSessionId) {
+      showTerminalNotice('只能在当前会话的提示符下重跑')
+      return
+    }
+    replacePromptLine(session, command)
+    void submitTerminalLine(session, '\r')
+  })
+  actions.append(time, copy, rerun)
   header.append(title, actions)
+  block.dataset.started = String(Date.now())
   block.append(header, meta)
   session.commandEntries.push(block)
   while (session.commandEntries.length > 20) session.commandEntries.shift()
@@ -1955,6 +2014,18 @@ function rememberCommandOutput(session: UiSession, text: string): void {
     block.append(output)
   }
   output.textContent = text
+  const problem = explainCommandProblem(text)
+  let note = block.querySelector('.command-block-note')
+  if (problem) {
+    if (!(note instanceof HTMLElement)) {
+      note = document.createElement('p')
+      note.className = 'command-block-note'
+      block.querySelector('header')?.after(note)
+    }
+    note.textContent = problem
+  } else {
+    note?.remove()
+  }
   block.classList.add('is-collapsed')
   if (block.querySelector('.command-output-toggle')) return
   const toggle = document.createElement('button')
@@ -1977,7 +2048,11 @@ function finishCommandBlock(session: UiSession): void {
   if (!block) return
   block.classList.remove('is-active')
   const time = block.querySelector('.command-block-time')
-  if (time && time.textContent === '运行中') time.textContent = '已结束'
+  if (time && time.textContent === '运行中') {
+    const started = Number(block.dataset.started)
+    const elapsed = Number.isFinite(started) ? Math.max(0, Date.now() - started) : 0
+    time.textContent = elapsed >= 1000 ? `已结束 · ${(elapsed / 1000).toFixed(1)}s` : `已结束 · ${elapsed}ms`
+  }
   session.runningBlock = null
   if (session.id === activeSessionId) renderSessionCommandArchive()
 }
@@ -2782,6 +2857,7 @@ window.addEventListener('beforeunload', () => {
   removeExitListener()
   removeRiskListener()
   removeModeListener()
+  removeDirectoryListener()
   resizeObserver.disconnect()
   window.clearInterval(metricsTimer)
 })

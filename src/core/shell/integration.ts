@@ -19,12 +19,14 @@ if [[ -f "$HOME/.zshrc" ]]; then
 fi
 __unixbridge_prompt() { print -Pn '\\e]133;A\\a' }
 __unixbridge_exec() { print -Pn '\\e]133;C\\a' }
+__unixbridge_cwd() { printf '\\e]7;file://localhost%s\\a' "$PWD"; }
 autoload -Uz add-zsh-hook 2>/dev/null
 if whence -w add-zsh-hook >/dev/null 2>&1; then
   add-zsh-hook precmd __unixbridge_prompt
+  add-zsh-hook precmd __unixbridge_cwd
   add-zsh-hook preexec __unixbridge_exec
 else
-  precmd_functions+=(__unixbridge_prompt)
+  precmd_functions+=(__unixbridge_prompt __unixbridge_cwd)
   preexec_functions+=(__unixbridge_exec)
 fi
 `
@@ -38,8 +40,9 @@ elif [[ -f "$HOME/.bashrc" ]]; then
   source "$HOME/.bashrc"
 fi
 __unixbridge_prompt() { printf '\\e]133;A\\a'; }
+__unixbridge_cwd() { printf '\\e]7;file://localhost%s\\a' "$PWD"; }
 PS0='\\e]133;C\\a'
-PROMPT_COMMAND="__unixbridge_prompt\${PROMPT_COMMAND:+;\$PROMPT_COMMAND}"
+PROMPT_COMMAND="__unixbridge_cwd; __unixbridge_prompt\${PROMPT_COMMAND:+;\$PROMPT_COMMAND}"
 `
 
 export function ensureShellIntegration(directory: string): { zsh: string; bash: string } {
@@ -71,6 +74,9 @@ export function powershellStartup(loadProfile: boolean): string {
     '} -ErrorAction SilentlyContinue',
     '};',
     'function prompt {',
+    "  $ubPath = (Get-Location).ProviderPath -replace '\\\\','/'",
+    '  if ($ubPath -match \'^[A-Za-z]:\') { $ubPath = "/$ubPath" }',
+    '  [Console]::Out.Write("$([char]27)]7;file://localhost$ubPath$([char]7)")',
     '  [Console]::Out.Write("$([char]27)]133;A$([char]7)")',
     '  if ($__ubPrompt) { & $__ubPrompt } else { "PS $($executionContext.SessionState.Path.CurrentLocation)> " }',
     '}'

@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   consumeOsc7,
+  workingDirectoryFromOsc7,
   explainScpFailure,
   inspectUploadTree,
   remoteUploadDirectory,
@@ -32,7 +33,9 @@ describe('SSH 上传', () => {
     expect(first.directories).toEqual([])
     const second = consumeOsc7(first.pending, 'xian/app\x07')
     expect(second.directories).toEqual(['/home/luoxian/app/'])
+    expect(second.locations).toEqual(['/home/luoxian/app'])
     expect(second.pending).toBe('')
+    expect(workingDirectoryFromOsc7('file://localhost/C:/Users/luoxian')).toBe('C:\\Users\\luoxian')
   })
 
   it('用参数数组调用 scp，不经过本地 shell', () => {

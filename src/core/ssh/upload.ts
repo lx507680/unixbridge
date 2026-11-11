@@ -34,21 +34,46 @@ export function directoryFromOsc7(payload: string): string | undefined {
   return remoteUploadDirectory(match[1])
 }
 
-export function consumeOsc7(pending: string, data: string): { pending: string; directories: string[] } {
+export function workingDirectoryFromOsc7(payload: string): string | undefined {
+  const match = /^file:\/\/[^/]*(\/.*)$/.exec(payload.trim())
+  if (!match?.[1]) return undefined
+  let value = match[1]
+  try {
+    value = decodeURIComponent(value)
+  } catch {
+    return undefined
+  }
+  if (/[\u0000-\u001f\u007f]/.test(value) || value.split('/').includes('..')) return undefined
+  const drive = /^\/([A-Za-z]):\/(.*)$/.exec(value)
+  if (drive?.[1]) return `${drive[1]}:\\${(drive[2] ?? '').replaceAll('/', '\\')}`
+  const driveRoot = /^\/([A-Za-z]):\/?$/.exec(value)
+  if (driveRoot?.[1]) return `${driveRoot[1]}:\\`
+  if (!value.startsWith('/')) return undefined
+  return value.length > 1 && value.endsWith('/') ? value.slice(0, -1) : value
+}
+
+export function consumeOsc7(
+  pending: string,
+  data: string
+): { pending: string; directories: string[]; locations: string[] } {
   const combined = `${pending}${data}`.slice(-8192)
   const directories: string[] = []
+  const locations: string[] = []
   let last = 0
   for (const match of combined.matchAll(new RegExp(OSC7_SOURCE, 'g'))) {
     const start = match.index ?? 0
     last = start + match[0].length
     const directory = directoryFromOsc7(match[1] ?? '')
+    const location = workingDirectoryFromOsc7(match[1] ?? '')
     if (directory) directories.push(directory)
+    if (location) locations.push(location)
   }
   const tail = combined.slice(last)
   const open = tail.lastIndexOf('\x1b]7;')
   return {
     pending: open >= 0 && tail.length - open < 4096 ? tail.slice(open) : '',
-    directories
+    directories,
+    locations
   }
 }
 
