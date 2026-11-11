@@ -107,16 +107,22 @@ export function scpUploadArguments(
 }
 
 export function explainScpFailure(text: string): string {
-  if (/ENOENT|not found|不是内部或外部命令/i.test(text)) return '本机没有可用的 scp，无法上传'
-  if (/timeout|ETIMEDOUT/i.test(text)) return '上传超时'
-  if (/Permission denied|Authentication|Host key verification failed/i.test(text)) {
-    return '上传需要本机已配置的 SSH 密钥或 ssh-agent，密码登录不能用于拖放上传'
+  if (/ENOENT|not found|不是内部或外部命令/i.test(text) && /scp/i.test(text)) return '本机没有可用的 scp，无法上传'
+  if (/timeout|ETIMEDOUT/i.test(text)) return '上传超过 120 秒，已停止。可以分成更小的文件夹再传'
+  if (/Permission denied|Authentication failed|Host key verification failed/i.test(text)) {
+    return '上传需要本机已配置的 SSH 密钥或 ssh-agent。密码登录不会弹出窗口，所以这次没有开始传输'
   }
-  const detail = text.replace(/\s+/g, ' ').trim().slice(0, 240)
+  if (/Connection refused|No route to host|Connection timed out|Operation timed out|Could not resolve/i.test(text)) {
+    return '连不上这台服务器。请确认主机、端口和当前网络'
+  }
+  const detail = text.replace(/\s+/g, ' ').trim().slice(0, 180)
   return detail ? `上传失败：${detail}` : '上传失败'
 }
 
-export async function inspectUploadTree(realPath: string, home: string): Promise<'file' | 'directory'> {
+export async function inspectUploadTree(
+  realPath: string,
+  home: string
+): Promise<{ kind: 'file' | 'directory'; count: number }> {
   if (!isInsideRoot(home, realPath)) throw new Error('只能上传当前用户目录中的文件或文件夹')
   const rootStat = await lstat(realPath)
   if (rootStat.isSymbolicLink()) {
@@ -124,7 +130,7 @@ export async function inspectUploadTree(realPath: string, home: string): Promise
     if (!isInsideRoot(home, target)) throw new Error('只能上传当前用户目录中的文件或文件夹')
     return inspectUploadTree(target, home)
   }
-  if (rootStat.isFile()) return 'file'
+  if (rootStat.isFile()) return { kind: 'file', count: 1 }
   if (!rootStat.isDirectory()) throw new Error('只能上传文件或文件夹')
 
   const seen = new Set<string>([realPath])
@@ -155,7 +161,7 @@ export async function inspectUploadTree(realPath: string, home: string): Promise
     }
   }
   await walk(realPath)
-  return 'directory'
+  return { kind: 'directory', count }
 }
 
 export async function uploadLocalPaths(options: {
@@ -166,6 +172,7 @@ export async function uploadLocalPaths(options: {
   home: string
   resolvePath: (requested: string) => Promise<string>
   run: (args: string[]) => Promise<void>
+  onProgress?: (message: string) => void
 }): Promise<{ message: string }> {
   if (options.localPaths.length === 0 || options.localPaths.length > 20) {
     throw new Error('一次最多上传 20 个文件或文件夹')
@@ -173,17 +180,23 @@ export async function uploadLocalPaths(options: {
   const remote = remoteUploadDirectory(options.remoteDirectory)
   if (!remote) throw new Error('远程目录无效')
   const names: string[] = []
-  for (const requested of options.localPaths) {
+  const total = options.localPaths.length
+  for (const [index, requested] of options.localPaths.entries()) {
     const realPath = await options.resolvePath(requested)
-    const kind = await inspectUploadTree(realPath, options.home)
+    const name = path.basename(realPath)
+    options.onProgress?.(`正在检查 ${name}（${index + 1}/${total}）…`)
+    const source = await inspectUploadTree(realPath, options.home)
+    const amount = source.kind === 'directory' ? `${source.count} 个条目` : '1 个文件'
+    const place = options.remoteKnown ? remote : `${remote}，远程当前目录未知，将放到家目录`
+    options.onProgress?.(`正在上传 ${name}（${amount}）到 ${place}`)
     try {
-      await options.run(scpUploadArguments(options.target, realPath, remote, kind))
+      await options.run(scpUploadArguments(options.target, realPath, remote, source.kind))
     } catch (error) {
       const reason = explainScpFailure(error instanceof Error ? error.message : String(error))
-      if (names.length === 0) throw new Error(reason)
-      throw new Error(`已上传 ${names.join('、')}，随后${reason}`)
+      if (names.length === 0) throw new Error(`${name}：${reason}`)
+      throw new Error(`已上传 ${names.join('、')}。${name}：${reason}`)
     }
-    names.push(path.basename(realPath))
+    names.push(name)
   }
   const host = options.target.user ? `${options.target.user}@${options.target.host}` : options.target.host
   const where = options.remoteKnown

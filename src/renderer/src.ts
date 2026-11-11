@@ -8,6 +8,7 @@ import { classifyFile, fileKindLabel, fileKindMark } from './file-icons'
 import {
   explainCommandProblem,
   joinCompletionDirectory,
+  completePathToken,
   pathCompletionQuery,
   suggestCommands,
   type CommandSuggestion
@@ -280,6 +281,7 @@ interface UiSession {
   commandEntries: HTMLElement[]
   runningBlock: HTMLElement | null
   currentDirectory?: string
+  remoteDirectory?: string
   groupId?: string
   nodeLabel?: string
   ssh?: SshTarget
@@ -322,6 +324,7 @@ function syncActiveSessionUi(): void {
   if (document.activeElement !== sessionNameInput) sessionNameInput.value = session.name
   syncSessionGroupOptions()
   sessionGroupInput.value = session.groupId ?? ''
+  showActiveDirectoryChip()
   for (const button of document.querySelectorAll<HTMLButtonElement>('#session-editor .color-options [data-color]')) {
     button.classList.toggle('is-selected', button.dataset.color === session.color)
   }
@@ -1250,11 +1253,30 @@ function insertTerminalText(text: string): void {
   terminal.focus()
 }
 
-function showDirectoryChip(directory: string): void {
+function showDirectoryChip(directory: string, remote = false): void {
   const parts = directory.split(/[\\/]/).filter(Boolean)
   contextDirectory.textContent = parts.length > 0 ? `…/${parts.slice(-2).join('/')}` : directory
-  contextDirectory.title = `查看文件夹：${directory}`
+  contextDirectory.title = remote
+    ? `远程当前目录：${directory}。拖到终端的文件会上传到这里。`
+    : `查看文件夹：${directory}`
+  if (remote) {
+    contextDirectory.dataset.remote = '1'
+    delete contextDirectory.dataset.path
+    return
+  }
+  delete contextDirectory.dataset.remote
   contextDirectory.dataset.path = directory
+}
+
+function showActiveDirectoryChip(): void {
+  const session = getActiveSession()
+  if (!session) return
+  if (session.ssh) {
+    showDirectoryChip(session.remoteDirectory || '远程目录未知', true)
+    return
+  }
+  if (session.currentDirectory) showDirectoryChip(session.currentDirectory)
+  else delete contextDirectory.dataset.remote
 }
 
 function closeDirectoryBrowser(): void {
@@ -1474,6 +1496,9 @@ function pathsFromDrop(event: DragEvent): string[] {
     .filter((item) => item.length > 0)
 }
 
+const removeUploadProgressListener = window.unixbridge.onUploadProgress((sessionId, message) => {
+  if (sessionId === activeSessionId) showTerminalNotice(message)
+})
 async function uploadDroppedPaths(session: UiSession, paths: string[]): Promise<void> {
   if (!session.ssh || paths.length === 0 || uploadInFlight) return
   uploadInFlight = true
@@ -1557,7 +1582,12 @@ const removeExitListener = window.unixbridge.onExit((sessionId, exitCode) => {
 })
 const removeDirectoryListener = window.unixbridge.onDirectory((sessionId, directory) => {
   const session = uiSessions.get(sessionId)
-  if (!session || session.ssh || session.currentDirectory === directory) return
+  if (!session || (!session.ssh && session.currentDirectory === directory)) return
+  if (session.ssh) {
+    session.remoteDirectory = directory
+    if (sessionId === activeSessionId) showDirectoryChip(directory, true)
+    return
+  }
   session.currentDirectory = directory
   if (sessionId !== activeSessionId) return
   workspaceSubtitle.textContent = directory
@@ -1768,7 +1798,8 @@ async function showWorkspaceContext(command: string, relayout = true): Promise<v
     const session = getActiveSession()
     const context = await window.unixbridge.workspaceContext(session?.currentDirectory)
     contextRuntime.textContent = session?.nodeLabel || context.runtime
-    showDirectoryChip(session?.currentDirectory || context.directory)
+    if (session?.ssh) showDirectoryChip(session.remoteDirectory || '远程目录未知', true)
+    else showDirectoryChip(session?.currentDirectory || context.directory)
     contextBranch.textContent = context.branch ?? '无 Git 分支'
     contextBranch.dataset.branch = context.branch ?? ''
     contextChanges.textContent = formatChangeChip(context.changes, context.insertions, context.deletions)
@@ -1852,13 +1883,20 @@ async function refreshPathCompletions(input: string): Promise<void> {
     const prefix = query.prefix.toLocaleLowerCase()
     const files = listing.items
       .filter((item) => item.name.toLocaleLowerCase().startsWith(prefix))
-      .slice(0, 6)
-      .map((item) => {
-        const slash = Math.max(input.lastIndexOf('/'), input.lastIndexOf('\\'))
-        const separator = input.includes('\\') ? '\\' : '/'
-        const next = `${input.slice(0, slash + 1)}${item.name}${item.type === 'directory' ? separator : ''}`
-        return { command: next, description: item.type === 'directory' ? '当前目录' : '当前文件' }
+      .sort((left, right) => {
+        if (left.type !== right.type) return left.type === 'directory' ? -1 : 1
+        return left.name.localeCompare(right.name)
       })
+      .slice(0, 6)
+      .map((item) => ({
+        command: completePathToken(
+          input,
+          item.name,
+          item.type === 'directory' ? 'directory' : 'file',
+          session.platform === 'win32' ? 'win32' : 'posix'
+        ),
+        description: item.type === 'directory' ? '目录' : '文件'
+      }))
     if (files.length === 0) return
     const seen = new Set(completionItems.map((item) => item.command))
     completionItems = [...completionItems, ...files.filter((item) => !seen.has(item.command))].slice(0, 8)
@@ -1947,34 +1985,9 @@ function beginCommandBlock(session: UiSession, command: string): void {
   const time = document.createElement('span')
   time.className = 'command-block-time'
   time.textContent = '运行中'
-  const copy = document.createElement('button')
-  copy.type = 'button'
-  copy.textContent = '复制'
   const meta = document.createElement('div')
   meta.className = 'command-block-meta'
-  copy.addEventListener('click', () => {
-    const body = block.querySelector('.command-block-output')?.textContent?.trim() ?? ''
-    void copyCommandText(body ? `${command}\n${body}` : command).then((copied) => {
-      if (!copied) return
-      copy.textContent = '已复制'
-      window.clearTimeout(copyResetTimer)
-      copyResetTimer = window.setTimeout(() => {
-        copy.textContent = '复制'
-      }, 1200)
-    })
-  })
-  const rerun = document.createElement('button')
-  rerun.type = 'button'
-  rerun.textContent = '重跑'
-  rerun.addEventListener('click', () => {
-    if (session.inputMode !== 'prompt' || session.id !== activeSessionId) {
-      showTerminalNotice('只能在当前会话的提示符下重跑')
-      return
-    }
-    replacePromptLine(session, command)
-    void submitTerminalLine(session, '\r')
-  })
-  actions.append(time, copy, rerun)
+  actions.append(time)
   header.append(title, actions)
   block.dataset.started = String(Date.now())
   block.append(header, meta)
@@ -2014,17 +2027,28 @@ function rememberCommandOutput(session: UiSession, text: string): void {
     block.append(output)
   }
   output.textContent = text
+  block.querySelector('.command-problem-toggle')?.remove()
+  block.querySelector('.command-block-note')?.remove()
   const problem = explainCommandProblem(text)
-  let note = block.querySelector('.command-block-note')
   if (problem) {
-    if (!(note instanceof HTMLElement)) {
-      note = document.createElement('p')
-      note.className = 'command-block-note'
-      block.querySelector('header')?.after(note)
-    }
+    const note = document.createElement('p')
+    note.className = 'command-block-note'
+    note.hidden = true
     note.textContent = problem
-  } else {
-    note?.remove()
+    const toggle = document.createElement('button')
+    toggle.type = 'button'
+    toggle.className = 'command-problem-toggle'
+    toggle.textContent = '错误说明'
+    toggle.addEventListener('click', () => {
+      note.hidden = !note.hidden
+      toggle.textContent = note.hidden ? '错误说明' : '收起说明'
+      requestAnimationFrame(() => {
+        fitAddon.fit()
+        resizeActiveTerminal()
+      })
+    })
+    block.querySelector('.command-block-actions')?.append(toggle)
+    block.querySelector('header')?.after(note)
   }
   block.classList.add('is-collapsed')
   if (block.querySelector('.command-output-toggle')) return
@@ -2043,9 +2067,42 @@ function rememberCommandOutput(session: UiSession, text: string): void {
   block.querySelector('.command-block-actions')?.append(toggle)
 }
 
+function attachFinishedActions(session: UiSession, block: HTMLElement): void {
+  if (block.querySelector('.command-copy')) return
+  const command = block.querySelector('header strong')?.textContent ?? ''
+  const copy = document.createElement('button')
+  copy.type = 'button'
+  copy.className = 'command-copy'
+  copy.textContent = '复制'
+  copy.addEventListener('click', () => {
+    const body = block.querySelector('.command-block-output')?.textContent?.trim() ?? ''
+    void copyCommandText(body ? `${command}\n${body}` : command).then((copied) => {
+      if (!copied) return
+      copy.textContent = '已复制'
+      window.clearTimeout(copyResetTimer)
+      copyResetTimer = window.setTimeout(() => {
+        copy.textContent = '复制'
+      }, 1200)
+    })
+  })
+  const rerun = document.createElement('button')
+  rerun.type = 'button'
+  rerun.textContent = '重跑'
+  rerun.addEventListener('click', () => {
+    if (session.inputMode !== 'prompt' || session.id !== activeSessionId) {
+      showTerminalNotice('只能在当前会话的提示符下重跑')
+      return
+    }
+    replacePromptLine(session, command)
+    void submitTerminalLine(session, '\r')
+  })
+  block.querySelector('.command-block-time')?.after(copy, rerun)
+}
+
 function finishCommandBlock(session: UiSession): void {
   const block = session.runningBlock
   if (!block) return
+  attachFinishedActions(session, block)
   block.classList.remove('is-active')
   const time = block.querySelector('.command-block-time')
   if (time && time.textContent === '运行中') {
@@ -2118,7 +2175,7 @@ function acceptCompletion(command: string): void {
   const session = getActiveSession()
   if (!session || session.inputMode !== 'prompt') return
   replacePromptLine(session, command)
-  hideCompletions()
+  if (!/[\\/]['"]?$/.test(command)) hideCompletions()
   terminal.focus()
 }
 
@@ -2775,6 +2832,11 @@ sessionGroupInput.addEventListener('change', () => {
 contextDirectory.addEventListener('click', (event) => {
   event.stopPropagation()
   closeContextPopover()
+  if (contextDirectory.dataset.remote === '1') {
+    closeDirectoryBrowser()
+    showTerminalNotice(contextDirectory.title)
+    return
+  }
   if (!directoryBrowser.hidden) {
     closeDirectoryBrowser()
     return
@@ -2858,6 +2920,7 @@ window.addEventListener('beforeunload', () => {
   removeRiskListener()
   removeModeListener()
   removeDirectoryListener()
+  removeUploadProgressListener()
   resizeObserver.disconnect()
   window.clearInterval(metricsTimer)
 })

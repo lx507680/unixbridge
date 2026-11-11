@@ -62,7 +62,7 @@ describe('SSH 上传', () => {
     const folder = join(home, 'notes')
     await mkdir(folder)
     await writeFile(join(folder, 'a.txt'), 'hi')
-    expect(await inspectUploadTree(folder, home)).toBe('directory')
+    expect(await inspectUploadTree(folder, home)).toEqual({ kind: 'directory', count: 1 })
     await symlink(outside, join(folder, 'escape'))
     await expect(inspectUploadTree(folder, home)).rejects.toThrow('符号链接')
   })

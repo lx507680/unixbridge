@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { explainCommandProblem, joinCompletionDirectory, pathCompletionQuery, suggestCommands } from '../../src/core/completion/commands'
+import {
+  completePathToken,
+  explainCommandProblem,
+  joinCompletionDirectory,
+  pathCompletionQuery,
+  suggestCommands
+} from '../../src/core/completion/commands'
 
 describe('常用命令补全', () => {
   it('按已输入前缀给出常用命令和历史命令', () => {
@@ -33,11 +39,20 @@ describe('常用命令补全', () => {
     expect(suggestCommands('git ', ['git status'], { commands: false, history: false })).toEqual([])
   })
 
-  it('只在路径参数上补全当前目录', () => {
-    expect(pathCompletionQuery('git status')).toBeUndefined()
+  it('补全命令后面的文件名，跳过选项', () => {
+    expect(pathCompletionQuery('git status')).toEqual({ parent: '', prefix: 'status' })
+    expect(pathCompletionQuery('cat READ')).toEqual({ parent: '', prefix: 'READ' })
     expect(pathCompletionQuery('cat src/re')).toEqual({ parent: 'src', prefix: 're' })
+    expect(pathCompletionQuery('ls -la')).toBeUndefined()
     expect(joinCompletionDirectory('/work/app', 'src')).toBe('/work/app/src')
     expect(joinCompletionDirectory('C:\\work', 'src')).toBe('C:\\work\\src')
+    expect(pathCompletionQuery("cat 'My Dir/")).toEqual({ parent: 'My Dir', prefix: '' })
+    expect(completePathToken('cat READ', 'README.md', 'file', 'posix')).toBe('cat README.md')
+    expect(completePathToken('cat READ', 'My Notes.md', 'file', 'posix')).toBe("cat 'My Notes.md'")
+    expect(completePathToken('cat src/', 'lib', 'directory', 'posix')).toBe('cat src/lib/')
+    expect(completePathToken("cat 'My Dir/", 'notes', 'directory', 'posix')).toBe("cat 'My Dir/notes/'")
+    expect(completePathToken('cat src\\', 'lib', 'directory', 'win32')).toBe('cat src\\lib\\')
+    expect(pathCompletionQuery("cat src/'My Dir/")).toEqual({ parent: 'src/My Dir', prefix: '' })
   })
 
   it('把常见 shell 错误收成一句说明', () => {

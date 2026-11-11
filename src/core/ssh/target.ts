@@ -37,6 +37,10 @@ integrate_bash() {
   printf '%s\\n' 'if [[ -f "$HOME/.bashrc" ]]; then source "$HOME/.bashrc"; fi' '__unixbridge_prompt() { printf "\\e]133;A\\a"; }' '__unixbridge_cwd() { printf "\\e]7;file://localhost%s\\a" "$PWD"; }' 'PS0="\\e]133;C\\a"' 'PROMPT_COMMAND="__unixbridge_cwd; __unixbridge_prompt\${PROMPT_COMMAND:+;\$PROMPT_COMMAND}"' > "$rc"
 }
 if command -v tmux >/dev/null 2>&1 && tmux has-session -t ${name} 2>/dev/null; then
+  dir=$(tmux display-message -p -t ${name} '#{pane_current_path}' 2>/dev/null || true)
+  case "$dir" in
+    /*) printf '\\033]7;file://localhost%s\\007' "$dir" ;;
+  esac
   exec tmux new-session -A -s ${name}
 fi
 case "$base" in

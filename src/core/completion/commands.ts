@@ -71,18 +71,57 @@ export function explainCommandProblem(output: string): string | undefined {
   return undefined
 }
 
-export function pathCompletionQuery(input: string): { parent: string; prefix: string } | undefined {
+function completionSpan(input: string): { stem: string; body: string } | undefined {
   if (!input || /\s$/.test(input)) return undefined
-  const token = input.match(/\S+$/)?.[0]
-  const command = input.trim().split(/\s+/)[0]
-  if (!token || !command || token === command) return undefined
-  if (!/[\\/]/.test(token) && !token.startsWith('.')) return undefined
-  const slash = Math.max(token.lastIndexOf('/'), token.lastIndexOf('\\'))
-  if (slash < 0) return { parent: '', prefix: token }
-  return {
-    parent: token.slice(0, slash) || (token.startsWith('/') || token.startsWith('\\') ? token.slice(0, 1) : ''),
-    prefix: token.slice(slash + 1)
+  const wrapped = /(?:^|[\s/\\])(['"])([^'"]*)\1$/.exec(input)
+  const open = wrapped ? undefined : /(?:^|[\s/\\])(['"])([^'"]*)$/.exec(input)
+  const match = wrapped ?? open
+  if (match?.[2] !== undefined && match.index !== undefined && match[1]) {
+    const openerAt = match.index + (match[0].startsWith(match[1]) ? 0 : 1)
+    const prefix = input.slice(0, openerAt)
+    const boundary = Math.max(prefix.lastIndexOf(' '), prefix.lastIndexOf('\t'))
+    const head = prefix.slice(boundary + 1)
+    const stem = head === '' || head.endsWith('/') || head.endsWith('\\') ? prefix.slice(0, boundary + 1) : prefix
+    const bodyHead = prefix.slice(stem.length)
+    return { stem, body: `${bodyHead}${match[2]}` }
   }
+  const plain = input.match(/\S+$/)
+  if (!plain?.[0]) return undefined
+  return { stem: input.slice(0, input.length - plain[0].length), body: plain[0] }
+}
+
+function quoteCompletionName(name: string, platform: 'win32' | 'posix'): string {
+  if (!/[\s'"\\$`!;&|()<>*?[\]]/.test(name)) return name
+  if (platform === 'win32') return `'${name.replaceAll("'", "''")}'`
+  return `'${name.replaceAll("'", "'\\''")}'`
+}
+
+export function pathCompletionQuery(input: string): { parent: string; prefix: string } | undefined {
+  const span = completionSpan(input)
+  const command = input.trim().split(/\s+/)[0]
+  if (!span?.body || !command || span.body === command || span.body.startsWith('-')) return undefined
+  const slash = Math.max(span.body.lastIndexOf('/'), span.body.lastIndexOf('\\'))
+  if (slash < 0) return { parent: '', prefix: span.body }
+  return {
+    parent: span.body.slice(0, slash) || (span.body.startsWith('/') || span.body.startsWith('\\') ? span.body.slice(0, 1) : ''),
+    prefix: span.body.slice(slash + 1)
+  }
+}
+
+export function completePathToken(
+  input: string,
+  name: string,
+  kind: 'file' | 'directory',
+  platform: 'win32' | 'posix'
+): string {
+  const span = completionSpan(input)
+  if (!span) return input
+  const slash = Math.max(span.body.lastIndexOf('/'), span.body.lastIndexOf('\\'))
+  const separator = span.body.includes('\\') || (platform === 'win32' && !span.body.includes('/')) ? '\\' : '/'
+  const base = slash >= 0 ? span.body.slice(0, slash + 1) : ''
+  const piece = `${base}${name}${kind === 'directory' ? separator : ''}`
+  const quote = /[\s'"$`!;&|()<>*?[\]]/.test(`${base}${name}`) || name.includes('\\')
+  return `${span.stem}${quote ? quoteCompletionName(piece, platform) : piece}`
 }
 
 export function joinCompletionDirectory(cwd: string, parent: string): string {

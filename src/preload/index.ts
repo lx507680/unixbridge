@@ -104,6 +104,7 @@ export interface UnixbridgeApi {
   onRisk: (listener: (sessionId: string, result: PtyWriteResult) => void) => () => void
   onMode: (listener: (sessionId: string, mode: 'prompt' | 'running' | 'application', output?: string) => void) => () => void
   onDirectory: (listener: (sessionId: string, directory: string) => void) => () => void
+  onUploadProgress: (listener: (sessionId: string, message: string) => void) => () => void
   recentAudit: () => Promise<Array<{ timestamp: string; input: string; outcome: string; decision: { action: string; reason: string; ruleId: string } }>>
   approveCommand: (sessionId: string, token: string) => Promise<{ approved: boolean }>
   cancelCommand: (sessionId: string, token: string) => Promise<{ cancelled: boolean }>
@@ -186,6 +187,14 @@ const api: UnixbridgeApi = {
     ): void => listener(payload.sessionId, payload.directory)
     ipcRenderer.on('pty:directory', handler)
     return () => ipcRenderer.removeListener('pty:directory', handler)
+  },
+  onUploadProgress: (listener) => {
+    const handler = (
+      _event: Electron.IpcRendererEvent,
+      payload: { sessionId: string; message: string }
+    ): void => listener(payload.sessionId, payload.message)
+    ipcRenderer.on('ssh:upload-progress', handler)
+    return () => ipcRenderer.removeListener('ssh:upload-progress', handler)
   },
   recentAudit: () => ipcRenderer.invoke('audit:recent'),
   approveCommand: (sessionId, token) => ipcRenderer.invoke('pty:approve', { sessionId, token }),

@@ -555,6 +555,11 @@ function registerPtyIpc(): void {
         remoteKnown: session.remoteDirectoryKnown,
         home,
         resolvePath: (requested) => resolveHomePath(requested, home),
+        onProgress: (message) => {
+          if (!event.sender.isDestroyed()) {
+            event.sender.send('ssh:upload-progress', { sessionId: session.id, message })
+          }
+        },
         run: async (args) => {
           try {
             await execFileAsync(process.platform === 'win32' ? 'scp.exe' : 'scp', args, {

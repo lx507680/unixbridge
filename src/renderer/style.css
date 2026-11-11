@@ -2919,6 +2919,10 @@ button.context-chip.is-open {
   border-color: var(--accent);
 }
 
+.command-block-actions .command-problem-toggle {
+  color: var(--danger);
+}
+
 .command-blocks {
   display: grid;
   max-height: 28%;
@@ -2953,7 +2957,7 @@ button.context-chip.is-open {
   gap: 6px;
   width: 100%;
   margin: 0;
-  padding: 8px 12px;
+  padding: 4px 12px;
   border: 0;
   border-bottom: 1px solid var(--border);
   border-radius: 0;
@@ -3055,6 +3059,10 @@ button.context-chip.is-open {
   color: var(--danger);
   font-size: 12px;
   line-height: 1.4;
+}
+
+.command-block-note[hidden] {
+  display: none;
 }
 
 .command-block-output {
