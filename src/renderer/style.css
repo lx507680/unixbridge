@@ -3098,6 +3098,10 @@ button.context-chip.is-open {
   pointer-events: none;
 }
 
+#terminal.is-directory-drop-target.is-ssh-upload::after {
+  content: "松开后上传到服务器";
+}
+
 /* “终端字号”同时控制主要界面功能文字。 */
 .brand,
 .nav-item,

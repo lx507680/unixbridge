@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { AiConfig, AiConfigStatus, ChatMessage, PtyWriteResult, SshTarget, StoredWorkspace } from '../shared/types'
 
 export type { AiConfig, AiConfigStatus, ChatMessage, PtyWriteResult, SshTarget, StoredGroup, StoredSession, StoredWorkspace } from '../shared/types'
@@ -123,6 +123,8 @@ export interface UnixbridgeApi {
   workspaceContext: (directory?: string) => Promise<WorkspaceContext>
   workspaceGit: (directory?: string) => Promise<GitDetails>
   nodeRuntimes: () => Promise<NodeRuntime[]>
+  pathForFile: (file: File) => string
+  uploadToSsh: (sessionId: string, paths: string[]) => Promise<{ message: string }>
 }
 
 const api: UnixbridgeApi = {
@@ -210,7 +212,15 @@ const api: UnixbridgeApi = {
     ipcRenderer.invoke('commands:structured', { command, args, cwd }),
   workspaceContext: (directory) => ipcRenderer.invoke('workspace:context', directory),
   workspaceGit: (directory) => ipcRenderer.invoke('workspace:git', directory),
-  nodeRuntimes: () => ipcRenderer.invoke('workspace:nodes')
+  nodeRuntimes: () => ipcRenderer.invoke('workspace:nodes'),
+  pathForFile: (file) => {
+    try {
+      return webUtils.getPathForFile(file)
+    } catch {
+      return ''
+    }
+  },
+  uploadToSsh: (sessionId, paths) => ipcRenderer.invoke('ssh:upload', { sessionId, paths })
 }
 
 contextBridge.exposeInMainWorld('unixbridge', api)

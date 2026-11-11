@@ -1,11 +1,13 @@
+import { execFile } from 'node:child_process'
 import { app, BrowserWindow, ipcMain, Notification, protocol, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron'
 import { randomBytes } from 'node:crypto'
 import { createReadStream, existsSync } from 'node:fs'
-import { appendFile, readFile, stat } from 'node:fs/promises'
+import { appendFile, readFile, realpath, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Readable } from 'node:stream'
+import { promisify } from 'node:util'
 import * as pty from 'node-pty'
 import { assessSubmittedLine } from '../core/dispatch'
 import {
@@ -24,10 +26,13 @@ import { previewMime } from '../core/preview/kind'
 import { ensureShellIntegration, powershellStartup } from '../core/shell/integration'
 import { scanTerminalOutput, presentCommandOutput, collectCommandOutput, type TerminalInputMode } from '../core/terminal/screen-mode'
 import { ShellState } from '../core/shellstate'
-import { sshLaunchArguments, type SshTarget } from '../core/ssh/target'
+import { consumeOsc7, uploadLocalPaths } from '../core/ssh/upload'
+import { parseSshTarget, sshLaunchArguments, type SshTarget } from '../core/ssh/target'
 import { sanitizeStoredWorkspace, type StoredWorkspace } from '../core/workspace/stored'
 import type { PtyWriteResult } from '../shared/types'
 import { registerWorkspaceIpc } from './workspace-ipc'
+
+const execFileAsync = promisify(execFile)
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -50,6 +55,10 @@ interface PtySession {
   commandStartedAt: number
   commandOutput: string
   outputCarry: string
+  ssh?: SshTarget
+  remoteDirectory: string
+  remoteDirectoryKnown: boolean
+  osc7Carry: string
   promptTimer?: NodeJS.Timeout
 }
 
@@ -104,6 +113,17 @@ async function saveStoredSessions(input: unknown): Promise<StoredWorkspace> {
   const workspace = sanitizeStoredWorkspace(input)
   await writeAtomic(sessionsFile(), JSON.stringify(workspace))
   return workspace
+}
+
+function sshLaunchTarget(target: SshTarget, sessionId: string): SshTarget {
+  const parsed = parseSshTarget(
+    `${target.user ? `${target.user}@` : ''}${target.host}${target.port === 22 ? '' : `:${target.port}`}`
+  )
+  if (!parsed || parsed.host !== target.host || parsed.port !== target.port || parsed.user !== target.user) {
+    throw new Error('SSH 目标无效')
+  }
+  sshLaunchArguments(parsed, sessionId)
+  return parsed
 }
 
 function spawnShell(
@@ -349,8 +369,8 @@ function registerPtyIpc(): void {
 
       const cols = Math.max(2, Math.floor(request.cols))
       const rows = Math.max(1, Math.floor(request.rows))
-      if (request.ssh) sshLaunchArguments(request.ssh, sessionId)
-      const { terminal, shell } = spawnShell(cols, rows, request.ssh, sessionId, request.loadProfile !== false)
+      const ssh = request.ssh ? sshLaunchTarget(request.ssh, sessionId) : undefined
+      const { terminal, shell } = spawnShell(cols, rows, ssh, sessionId, request.loadProfile !== false)
       const session: PtySession = {
         id: sessionId,
         ownerId: event.sender.id,
@@ -364,7 +384,11 @@ function registerPtyIpc(): void {
         lastCommand: '',
         commandStartedAt: 0,
         commandOutput: '',
-        outputCarry: ''
+        outputCarry: '',
+        remoteDirectory: '~/',
+        remoteDirectoryKnown: false,
+        osc7Carry: '',
+        ...(ssh ? { ssh } : {})
       }
       sessions.set(sessionId, session)
 
@@ -373,6 +397,13 @@ function registerPtyIpc(): void {
         const scan = scanTerminalOutput(session.inputMode, combined)
         session.outputCarry = scan.pending
         const ready = scan.pending ? combined.slice(0, -scan.pending.length) : combined
+        const osc = consumeOsc7(session.osc7Carry, ready)
+        session.osc7Carry = osc.pending
+        const remoteDirectory = osc.directories.at(-1)
+        if (remoteDirectory) {
+          session.remoteDirectory = remoteDirectory
+          session.remoteDirectoryKnown = true
+        }
         const wasCapturing = session.promptClosesCommand
         const collected = collectCommandOutput(session.commandOutput, wasCapturing, ready)
         if (wasCapturing || collected.capturing || collected.output) session.commandOutput = collected.output
@@ -495,6 +526,40 @@ function registerPtyIpc(): void {
       Math.max(2, Math.floor(request.cols)),
       Math.max(1, Math.floor(request.rows))
     )
+  })
+
+  ipcMain.handle('ssh:upload', async (event, request: { sessionId?: string; paths?: string[] }) => {
+    if (!isTrustedSender(event)) throw new Error('拒绝不受信任的上传请求')
+    const session = sessions.get(String(request?.sessionId ?? ''))
+    if (session?.ownerId !== event.sender.id || !session.ssh) throw new Error('当前会话不是 SSH')
+    const paths = Array.isArray(request?.paths) ? request.paths.filter((item) => typeof item === 'string') : []
+    const home = await realpath(homedir())
+    const target = session.ssh
+    try {
+      return await uploadLocalPaths({
+        target,
+        localPaths: paths,
+        remoteDirectory: session.remoteDirectory,
+        remoteKnown: session.remoteDirectoryKnown,
+        home,
+        resolvePath: (requested) => resolveHomePath(requested, home),
+        run: async (args) => {
+          try {
+            await execFileAsync(process.platform === 'win32' ? 'scp.exe' : 'scp', args, {
+              timeout: 120_000,
+              maxBuffer: 1024 * 1024,
+              windowsHide: true
+            })
+          } catch (error) {
+            const stderr = typeof (error as { stderr?: unknown }).stderr === 'string' ? (error as { stderr: string }).stderr : ''
+            const message = error instanceof Error ? error.message : String(error)
+            throw new Error(`${message}\n${stderr}`)
+          }
+        }
+      })
+    } catch (error) {
+      throw new Error(error instanceof Error ? error.message : '上传失败')
+    }
   })
 
   ipcMain.on('pty:dispose', (event, request: { sessionId: string }) => {

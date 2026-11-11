@@ -1180,8 +1180,8 @@ async function loadFiles(path?: string): Promise<void> {
       row.draggable = true
       row.title =
         item.type === 'directory'
-          ? `打开或拖到终端：${item.path}`
-          : `拖到终端，在所在目录执行命令：${listing.path}`
+          ? '拖到终端：本地会话切换目录，SSH 会话上传该文件夹'
+          : '拖到 SSH 终端可上传该文件'
       const name = document.createElement('span')
       name.className = 'file-name'
       const label = document.createElement('span')
@@ -1201,15 +1201,18 @@ async function loadFiles(path?: string): Promise<void> {
       row.addEventListener('dragstart', (event) => {
         const targetDirectory = item.type === 'directory' ? item.path : listing.path
         draggedDirectory = targetDirectory
+        draggedUploadPath = item.path
         row.classList.add('is-dragging')
         event.dataTransfer?.setData('application/x-unixbridge-directory', targetDirectory)
-        event.dataTransfer?.setData('text/plain', targetDirectory)
+        event.dataTransfer?.setData('application/x-unixbridge-path', item.path)
+        event.dataTransfer?.setData('text/plain', item.path)
         if (event.dataTransfer) event.dataTransfer.effectAllowed = 'copy'
       })
       row.addEventListener('dragend', () => {
         draggedDirectory = undefined
+        draggedUploadPath = undefined
         row.classList.remove('is-dragging')
-        terminalRoot.classList.remove('is-directory-drop-target')
+        terminalRoot.classList.remove('is-directory-drop-target', 'is-ssh-upload')
       })
       fileList.append(row)
     }
@@ -1438,30 +1441,81 @@ function changeTerminalDirectory(path: string): void {
 }
 
 let draggedDirectory: string | undefined
+let draggedUploadPath: string | undefined
+let uploadInFlight = false
 
 function isTerminalDropTarget(target: EventTarget | null): boolean {
   return target instanceof Node && terminalRoot.contains(target)
 }
 
+function externalFileDrag(event: DragEvent): boolean {
+  const types = event.dataTransfer?.types
+  if (!types) return false
+  return [...types].includes('Files')
+}
+
+function clearTerminalDropState(): void {
+  draggedDirectory = undefined
+  draggedUploadPath = undefined
+  terminalRoot.classList.remove('is-directory-drop-target', 'is-ssh-upload')
+}
+
+function pathsFromDrop(event: DragEvent): string[] {
+  const custom = event.dataTransfer?.getData('application/x-unixbridge-path') || draggedUploadPath
+  if (custom) return [custom]
+  return [...(event.dataTransfer?.files ?? [])]
+    .map((file) => window.unixbridge.pathForFile(file))
+    .filter((item) => item.length > 0)
+}
+
+async function uploadDroppedPaths(session: UiSession, paths: string[]): Promise<void> {
+  if (!session.ssh || paths.length === 0 || uploadInFlight) return
+  uploadInFlight = true
+  const label = sshLabel(session.ssh)
+  showTerminalNotice(`正在上传到 ${label}…`)
+  try {
+    const result = await window.unixbridge.uploadToSsh(session.id, paths)
+    if (getActiveSession()?.id === session.id) showTerminalNotice(result.message)
+  } catch (error) {
+    if (getActiveSession()?.id === session.id) {
+      showTerminalNotice(error instanceof Error ? error.message : String(error))
+    }
+  } finally {
+    uploadInFlight = false
+  }
+}
+
 document.addEventListener('dragover', (event) => {
-  if (!draggedDirectory || !isTerminalDropTarget(event.target)) {
-    terminalRoot.classList.remove('is-directory-drop-target')
+  const internal = Boolean(draggedDirectory || draggedUploadPath)
+  const external = externalFileDrag(event)
+  const session = getActiveSession()
+  if ((!internal && !(external && session?.ssh)) || !isTerminalDropTarget(event.target)) {
+    terminalRoot.classList.remove('is-directory-drop-target', 'is-ssh-upload')
     return
   }
   event.preventDefault()
   terminalRoot.classList.add('is-directory-drop-target')
+  terminalRoot.classList.toggle('is-ssh-upload', Boolean(session?.ssh))
   if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
 }, true)
 
 document.addEventListener('drop', (event) => {
-  const path =
+  if (!isTerminalDropTarget(event.target)) return
+  const session = getActiveSession()
+  const uploadPaths = pathsFromDrop(event)
+  const directory =
     event.dataTransfer?.getData('application/x-unixbridge-directory') || draggedDirectory
-  if (!path || !isTerminalDropTarget(event.target)) return
+  const sshDrop = Boolean(session?.ssh && uploadPaths.length > 0)
+  if (!sshDrop && !directory && !externalFileDrag(event)) return
   event.preventDefault()
   event.stopPropagation()
-  terminalRoot.classList.remove('is-directory-drop-target')
-  draggedDirectory = undefined
-  changeTerminalDirectory(path)
+  clearTerminalDropState()
+  if (!sshDrop && !directory) return
+  if (sshDrop && session) {
+    void uploadDroppedPaths(session, uploadPaths)
+    return
+  }
+  if (directory) changeTerminalDirectory(directory)
 }, true)
 
 const removeDataListener = window.unixbridge.onData((sessionId, data) => {

@@ -40,6 +40,7 @@ describe('持久 SSH', () => {
     const remote = args.at(-1) ?? ''
     expect(remote).toContain(`tmux new-session -A -s ${sshSessionName('123e4567-e89b-12d3-a456-426614174000')}`)
     expect(remote).toContain('\\e]133;A')
+    expect(remote).toContain('\\e]7;file://localhost%s')
     expect(remote).not.toContain('example.com')
     expect(remote).not.toContain('luoxian')
   })

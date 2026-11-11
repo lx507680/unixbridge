@@ -29,12 +29,12 @@ integrate_zsh() {
   printf '%s\\n' 'if [[ -f "$HOME/.zshenv" ]]; then source "$HOME/.zshenv"; fi' > "$dir/.zshenv"
   printf '%s\\n' 'if [[ -f "$HOME/.zprofile" ]]; then source "$HOME/.zprofile"; fi' > "$dir/.zprofile"
   printf '%s\\n' 'if [[ -f "$HOME/.zlogin" ]]; then source "$HOME/.zlogin"; fi' > "$dir/.zlogin"
-  printf '%s\\n' 'export ZDOTDIR="$HOME"' 'if [[ -f "$HOME/.zshrc" ]]; then source "$HOME/.zshrc"; fi' '__unixbridge_prompt() { print -Pn "\\e]133;A\\a" }' '__unixbridge_exec() { print -Pn "\\e]133;C\\a" }' 'precmd_functions+=(__unixbridge_prompt)' 'preexec_functions+=(__unixbridge_exec)' > "$dir/.zshrc"
+  printf '%s\\n' 'export ZDOTDIR="$HOME"' 'if [[ -f "$HOME/.zshrc" ]]; then source "$HOME/.zshrc"; fi' '__unixbridge_prompt() { print -Pn "\\e]133;A\\a" }' '__unixbridge_exec() { print -Pn "\\e]133;C\\a" }' '__unixbridge_cwd() { printf "\\e]7;file://localhost%s\\a" "$PWD"; }' 'precmd_functions+=(__unixbridge_prompt __unixbridge_cwd)' 'preexec_functions+=(__unixbridge_exec)' > "$dir/.zshrc"
   export ZDOTDIR="$dir"
 }
 integrate_bash() {
   rc=$(mktemp)
-  printf '%s\\n' 'if [[ -f "$HOME/.bashrc" ]]; then source "$HOME/.bashrc"; fi' '__unixbridge_prompt() { printf "\\e]133;A\\a"; }' 'PS0="\\e]133;C\\a"' 'PROMPT_COMMAND="__unixbridge_prompt\${PROMPT_COMMAND:+;\$PROMPT_COMMAND}"' > "$rc"
+  printf '%s\\n' 'if [[ -f "$HOME/.bashrc" ]]; then source "$HOME/.bashrc"; fi' '__unixbridge_prompt() { printf "\\e]133;A\\a"; }' '__unixbridge_cwd() { printf "\\e]7;file://localhost%s\\a" "$PWD"; }' 'PS0="\\e]133;C\\a"' 'PROMPT_COMMAND="__unixbridge_cwd; __unixbridge_prompt\${PROMPT_COMMAND:+;\$PROMPT_COMMAND}"' > "$rc"
 }
 if command -v tmux >/dev/null 2>&1 && tmux has-session -t ${name} 2>/dev/null; then
   exec tmux new-session -A -s ${name}
